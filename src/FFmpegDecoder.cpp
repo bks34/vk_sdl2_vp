@@ -5,7 +5,6 @@
 #include "FFmpegDecoder.h"
 
 #include <array>
-#include <fstream>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -22,8 +21,8 @@ static std::map<SDL_AudioFormat, AVSampleFormat> AUDIO_FORMAT_MAP = {
 
 FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& audio_spec) {
     this->filename = filename;
-    videoDecoder.setMaxFrameSize(5);
-    audioDecoder.setMaxFrameSize(10);
+    videoDecoder.setMaxFrameSize(3);
+    audioDecoder.setMaxFrameSize(9);
 
     bool hasVideo = false, hasAudio = false;
 
@@ -63,7 +62,7 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
 
         // Video Codec Context
         videoDecoder.pAVCtx = avcodec_alloc_context3(nullptr);
-        videoDecoder.pAVCtx->thread_count = 2;
+        videoDecoder.pAVCtx->thread_count = 6;
         videoDecoder.pAVCtx->thread_type = FF_THREAD_FRAME;
         avcodec_parameters_to_context(videoDecoder.pAVCtx, pFormatCtx->streams[videoIndex]->codecpar);
 

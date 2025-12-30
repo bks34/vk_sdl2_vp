@@ -19,7 +19,7 @@ extern "C"
 #include <string>
 #include <atomic>
 #include <condition_variable>
-#include <SDL_audio.h>
+#include <SDL2/SDL_audio.h>
 #include "ThreadSafeQueue.h"
 
 class FFmpegDecoder {

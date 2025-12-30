@@ -1,12 +1,10 @@
 #include "VulkanSDL2App.h"
-#include <utility>
 #include <iostream>
 #include <set>
 
 #include "../shaders/vert_spv.h"
 #include "../shaders/frag_spv.h"
 
-#include "Utils.h"
 
 #ifdef NDEBUG
 static const bool enableValidationLayers = false;
@@ -45,10 +43,11 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyDebugUtilsMessengerEXT( VkInstance instance,
 }
 
 
-VulkanSDL2App::VulkanSDL2App(std::string title, int width, int height) {
+VulkanSDL2App::VulkanSDL2App(std::string title, int width, int height, bool DiscreteGpuFirst) {
     this->title = title;
     this->windowWidth = width;
     this->windowHeight = height;
+    this->DiscreteGpuFirst = DiscreteGpuFirst;
 
     initWindow();
     initVulkan();
@@ -175,7 +174,10 @@ void VulkanSDL2App::run() {
                         case SDL_WINDOWEVENT_SIZE_CHANGED:
                             windowWidth = event.window.data1;
                             windowHeight = event.window.data2;
-                            frameBufferResized = true;
+                            if (!frameBufferResized) {
+                                frameBufferResized = true;
+                            }
+
                             break;
                         default:
                             break;
@@ -187,6 +189,8 @@ void VulkanSDL2App::run() {
                 break;
             }
         }
+        // Avoid high cpu usage on the main thread
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     while (!drawThreadExited || !ffmpegDecoder->isEnded()) {}
     std::printf("application exiting...\n");
@@ -255,7 +259,7 @@ void VulkanSDL2App::initWindow() {
     window = SDL_CreateWindow(
         title.data(),
         0, 0, windowWidth, windowHeight,
-        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 
     if (window == nullptr) {
         auto error = "Create window failed: " + std::string(SDL_GetError());
@@ -401,7 +405,23 @@ void VulkanSDL2App::pickPhysicalDevice() {
     if (suitableDevices.empty()) {
         throw std::runtime_error("Failed to find a suitable GPU!");
     }
+
     physicalDevice = suitableDevices[0];
+    if (DiscreteGpuFirst) {
+        for (const auto& dev : suitableDevices) {
+            if (dev.getProperties().deviceType == vk::PhysicalDeviceType::eDiscreteGpu) {
+                physicalDevice = dev;
+                break;
+            }
+        }
+    } else {
+        for (const auto& dev : suitableDevices) {
+            if (dev.getProperties().deviceType == vk::PhysicalDeviceType::eIntegratedGpu) {
+                physicalDevice = dev;
+                break;
+            }
+        }
+    }
     physicalDeviceName = std::string(physicalDevice.getProperties().deviceName);
 }
 
@@ -453,7 +473,13 @@ void VulkanSDL2App::createSwapChain() {
         imageCount = swapChainSupport.capabilities.maxImageCount;
     }
 
+    vk::SwapchainKHR oldSwapChain = swapChain;
+
     vk::SwapchainCreateInfoKHR createInfo = {};
+    if (oldSwapChain!=vk::SwapchainKHR{}) {
+        createInfo.oldSwapchain = oldSwapChain;
+    }
+
     createInfo.surface = surface;
     createInfo.minImageCount = imageCount;
 
@@ -480,7 +506,11 @@ void VulkanSDL2App::createSwapChain() {
     createInfo.presentMode = presentMode;
     createInfo.clipped = VK_TRUE;
 
-    swapChain = device.createSwapchainKHR(createInfo);
+    vk::SwapchainKHR newSwapChain = device.createSwapchainKHR(createInfo);
+    presentQueue.waitIdle();
+    device.waitIdle();
+    cleanupSwapChain();
+    swapChain = newSwapChain;
     swapChainImages = device.getSwapchainImagesKHR(swapChain);
 
     swapChainImageFormat = surfaceFormat.format;
@@ -877,10 +907,6 @@ void VulkanSDL2App::cleanupSwapChain() {
 }
 
 void VulkanSDL2App::reCreateSwapChain() {
-    device.waitIdle();
-
-    cleanupSwapChain();
-
     createSwapChain();
     createImageViews();
     createFrameBuffers();
@@ -1009,7 +1035,8 @@ void VulkanSDL2App::recordCommandBuffer(vk::CommandBuffer commandBuffer, uint32_
     float viewX = 0.0, viewY = 0.0;
     int viewportWidth, viewportHeight;
 
-    int extentWidth = swapChainExtent.width, extentHeight = swapChainExtent.height;
+
+    int extentWidth = swapChainExtent.width, extentHeight= swapChainExtent.height;
 
     float aspectRatioWindow = static_cast<float>(extentWidth) / static_cast<float>(extentHeight);
     float aspectRatioMedia = static_cast<float>(mediaWidth) / static_cast<float>(mediaHeight);
@@ -1095,8 +1122,24 @@ std::vector<const char *> VulkanSDL2App::getRequiredExtensions() {
 
 bool VulkanSDL2App::isDeviceSuitable(vk::PhysicalDevice device) {
     QueueFamilyIndices indices = findQueueFamilies(device);
+    if (!indices.isComplete()) {
+        return false;
+    }
 
-    return indices.isComplete();
+    bool supportSurface = true;
+    vk::Bool32 graphicsSupported = VK_FALSE, presentSupported = VK_FALSE;
+    if (device.getSurfaceSupportKHR(indices.graphicsAndComputeFamily.value(), surface, &graphicsSupported)
+        != vk::Result::eSuccess) {
+        return false;
+    }
+    if (device.getSurfaceSupportKHR(indices.presentFamily.value(), surface, &presentSupported)
+        != vk::Result::eSuccess) {
+        return false;
+    }
+
+    supportSurface = (graphicsSupported == vk::True) && (presentSupported == vk::True);
+
+    return supportSurface;
 }
 
 VulkanSDL2App::QueueFamilyIndices VulkanSDL2App::findQueueFamilies(vk::PhysicalDevice device) {

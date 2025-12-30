@@ -1,18 +1,15 @@
 #include <SDL2/SDL.h>
-#include <SDL_events.h>
-#include <SDL_video.h>
 #include <vulkan/vulkan.hpp>
 #include <SDL2/SDL_vulkan.h>
 #include <string>
 #include <optional>
-#include <exception>
 #include <glm/glm.hpp>
 #include "FFmpegDecoder.h"
 #include "SDLAudioPlayer.h"
 
 class VulkanSDL2App {
 public:
-    VulkanSDL2App(std::string title, int width, int height);
+    VulkanSDL2App(std::string title, int width, int height, bool DiscreteGpuFirst);
     ~VulkanSDL2App();
 
     void run();
@@ -63,6 +60,7 @@ private:
 
     // data
     std::string title;
+    bool DiscreteGpuFirst = false;
 
     // about window size
     std::mutex windowResizeMutex;

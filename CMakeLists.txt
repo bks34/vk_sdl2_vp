@@ -37,8 +37,6 @@ add_executable(${PROJECT_NAME}
         src/FFmpegDecoder.h
         shaders/vert_spv.h
         shaders/frag_spv.h
-        src/Utils.cpp
-        src/Utils.h
         src/ThreadSafeQueue.h
         src/SDLAudioPlayer.cpp
         src/SDLAudioPlayer.h
