@@ -242,8 +242,10 @@ double FFmpegDecoder::getDelay(int64_t videoPts) {
 
 void FFmpegDecoder::readPacket() {
     audioDecoder.decodeThread = std::thread(&FFmpegDecoder::audioDecode, this);
+    audioDecoder.threadRunning = true;
     audioDecoder.decodeThread.detach();
     videoDecoder.decodeThread = std::thread(&FFmpegDecoder::videoDecode, this);
+    videoDecoder.threadRunning = true;
     videoDecoder.decodeThread.detach();
 
     while (running) {
@@ -310,13 +312,19 @@ void FFmpegDecoder::readPacket() {
 
     avformat_close_input(&pFormatCtx);
 
-    std::printf("FFmpegDecoder exiting...\n");
+    audioDecoder.packetQueue.clear();
+    videoDecoder.packetQueue.clear();
+
+    videoDecoder.threadRunning = false;
+    audioDecoder.threadRunning = false;
+
     stopped = true;
+    std::printf("FFmpegDecoder exiting...\n");
 }
 
 void FFmpegDecoder::videoDecode() {
     AVFrame* pAVframe = av_frame_alloc();
-    while (running) {
+    while (videoDecoder.threadRunning) {
         std::shared_ptr<Packet> pPacket;
 
         videoDecoder.packetQueue.pop(pPacket);
@@ -374,18 +382,24 @@ void FFmpegDecoder::videoDecode() {
             }
         }
     }
-    videoDecoder.packetQueue.clear();
-    avcodec_flush_buffers(videoDecoder.pAVCtx);
-    videoDecoder.frameQueue.clear();
+
+    if (videoIsCover) {
+        while (videoDecoder.threadRunning) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
 
     av_frame_free(&pAVframe);
     sws_freeContext(pSwsCtx);
+    avcodec_flush_buffers(videoDecoder.pAVCtx);
     avcodec_free_context(&videoDecoder.pAVCtx);
+
+    videoDecoder.frameQueue.clear();
 }
 
 void FFmpegDecoder::audioDecode() {
     AVFrame* pAVframe = av_frame_alloc();
-    while (running) {
+    while (audioDecoder.threadRunning) {
         std::shared_ptr<Packet> pPacket;
 
         audioDecoder.packetQueue.pop(pPacket);
@@ -438,11 +452,13 @@ void FFmpegDecoder::audioDecode() {
             audioDecoder.frameQueue.push(frame);
         }
     }
-    audioDecoder.packetQueue.clear();
-    avcodec_flush_buffers(audioDecoder.pAVCtx);
-    audioDecoder.frameQueue.clear();
+
+
 
     av_frame_free(&pAVframe);
     swr_free(&pSwrCtx);
+    avcodec_flush_buffers(audioDecoder.pAVCtx);
     avcodec_free_context(&audioDecoder.pAVCtx);
+
+    audioDecoder.frameQueue.clear();
 }

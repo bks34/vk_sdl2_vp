@@ -199,7 +199,7 @@ void VulkanSDL2App::run() {
 
 void VulkanSDL2App::draw() {
     double dt = ffmpegDecoder->getDeltaTime();
-    if (ffmpegDecoder->hasAudio()) {
+    if (ffmpegDecoder->isVideo() && ffmpegDecoder->hasAudio()) {
         while (running) {
             if (ffmpegDecoder->isStopped()) {
                 break;

@@ -136,6 +136,7 @@ private:
         ThreadSafeQueue<std::shared_ptr<Frame>> frameQueue;
         size_t maxFrameQueueSize = 0;
         std::thread decodeThread;
+        std::atomic<bool> threadRunning = false;
     };
 
     DecoderInfo videoDecoder;
