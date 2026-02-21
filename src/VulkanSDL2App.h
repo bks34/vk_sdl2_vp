@@ -179,12 +179,12 @@ private:
     void initTextureResource();
     void createSyncObjects();
 
-    void DrawFrame();
+    void DrawFrame(std::shared_ptr<FFmpegDecoder::Frame> frame);
 
     void cleanupSwapChain();
     void reCreateSwapChain();
 
-    void updateTexture(uint32_t imageIndex);
+    void updateTexture(uint32_t imageIndex, std::shared_ptr<FFmpegDecoder::Frame> frame);
     void recordCommandBuffer(vk::CommandBuffer commandBuffer, uint32_t imageIndex);
 
     // helper functions

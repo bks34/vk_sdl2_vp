@@ -32,7 +32,7 @@ public:
 
     void pause();
 
-    bool isEnded();
+    bool isStopped();
 
     struct Frame {
         ~Frame() {
@@ -48,7 +48,9 @@ public:
 
         AVFrame* data = nullptr;
         uint8_t* audioData = nullptr;
-        int audioSampleSize = 0;
+        int audioBufferSize = 0;
+        int64_t videoPts = 0;
+        int64_t audioPts = 0;
     };
 
     std::shared_ptr<Frame> getVideoFrame();
@@ -56,6 +58,8 @@ public:
     std::shared_ptr<Frame> getAudioFrame();
 
     bool isVideo();
+
+    bool hasAudio();
 
     double getFps();
 
@@ -70,6 +74,17 @@ public:
     std::array<int, 2> getVideoSize();
 
     void setAudioSpec(SDL_AudioSpec audio_spec);
+
+    // audio clock, for sync
+    struct AudioClock {
+        std::atomic<int64_t> pts = 0;
+        int sample_rate = 1;
+    };
+    AudioClock audioClock;
+    void updateAudioClock(int lens, int64_t newFrame);
+
+    int64_t getAudioTimePts();
+    double getDelay(int64_t videoPts);
 private:
     std::string filename;
     double duration;
@@ -83,7 +98,9 @@ private:
     std::atomic<bool> running = true;
     std::atomic<bool> paused = false;
 
-    // clock
+    std::atomic<bool> stopped = false;
+
+    // clock for seek
     struct Clock {
         int64_t audioPts = 0;
         int64_t videoPts = 0;

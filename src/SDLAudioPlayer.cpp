@@ -16,7 +16,7 @@ SDLAudioPlayer::SDLAudioPlayer() {
     deviceName_.assign(name);
 
     if (spec_.samples == 0) {
-        spec_.samples = 2048;
+        spec_.samples = 1024;
     }
     spec_.userdata = this;
     spec_.callback = callback;
@@ -79,9 +79,12 @@ void SDLAudioPlayer::fillAudio(Uint8 *stream, int len) {
                 buffer_ = nullptr;
             }
             auto frame = ffmpegDecoder->getAudioFrame();
+
+            ffmpegDecoder->updateAudioClock(0, frame->audioPts);
+
             buffer_ = frame->audioData;
             audioPos = buffer_;
-            bufferSize_ = frame->audioSampleSize;
+            bufferSize_ = frame->audioBufferSize;
         }
 
         int fillLen = (bufferSize_ < len) ? bufferSize_ : len;
@@ -89,6 +92,9 @@ void SDLAudioPlayer::fillAudio(Uint8 *stream, int len) {
 
         audioPos += fillLen;
         bufferSize_ -= fillLen;
+
+        ffmpegDecoder->updateAudioClock(fillLen, 0);
+
         stream += fillLen;
         len -= fillLen;
     }

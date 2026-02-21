@@ -59,13 +59,13 @@ set(CPACK_GENERATOR "DEB")
 
 # 设置软件包基本信息
 set(CPACK_PACKAGE_NAME "vk_sdl2_vp")
-set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_PACKAGE_VERSION "0.1.2")
 set(CPACK_PACKAGE_DESCRIPTION "一个基于vulkan + sdl2 + ffmpeg的简单的视频播放器")
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Shaoquan He 2712110988@qq.com") # 必须设置
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Shaoquan He 2712110988@qq.com")
 
 # 设置deb包特定信息
-set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64") # e.g., amd64, arm64, armhf
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.28), libstdc++6") # 可选：指定依赖包
+set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.28), libstdc++6")
 # 启用自动依赖检测
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 

@@ -7,6 +7,7 @@
 #include <array>
 #include <iostream>
 #include <map>
+#include <SDL_cpuinfo.h>
 #include <stdexcept>
 #include <bits/ostream.tcc>
 
@@ -21,8 +22,8 @@ static std::map<SDL_AudioFormat, AVSampleFormat> AUDIO_FORMAT_MAP = {
 
 FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& audio_spec) {
     this->filename = filename;
-    videoDecoder.setMaxFrameSize(3);
-    audioDecoder.setMaxFrameSize(9);
+    videoDecoder.setMaxFrameSize(5);
+    audioDecoder.setMaxFrameSize(10);
 
     bool hasVideo = false, hasAudio = false;
 
@@ -58,11 +59,13 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
         fps_num = pFormatCtx->streams[videoIndex]->r_frame_rate.num;
         if (!videoIsCover) {
             fps = static_cast<double>(fps_num) / fps_den;
+        } else {
+            fps = 30;
         }
 
         // Video Codec Context
         videoDecoder.pAVCtx = avcodec_alloc_context3(nullptr);
-        videoDecoder.pAVCtx->thread_count = 6;
+        videoDecoder.pAVCtx->thread_count = 2;
         videoDecoder.pAVCtx->thread_type = FF_THREAD_FRAME;
         avcodec_parameters_to_context(videoDecoder.pAVCtx, pFormatCtx->streams[videoIndex]->codecpar);
 
@@ -90,6 +93,7 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
     }
 
     if (hasAudio) {
+        audioClock.sample_rate = audio_spec.freq;
         // Audio Codec Context
         audioDecoder.pAVCtx = avcodec_alloc_context3(nullptr);
         avcodec_parameters_to_context(audioDecoder.pAVCtx, pFormatCtx->streams[audioIndex]->codecpar);
@@ -142,8 +146,8 @@ void FFmpegDecoder::pause() {
     paused = !paused;
 }
 
-bool FFmpegDecoder::isEnded() {
-    return !running;
+bool FFmpegDecoder::isStopped() {
+    return stopped;
 }
 
 std::shared_ptr<FFmpegDecoder::Frame> FFmpegDecoder::getVideoFrame() {
@@ -172,6 +176,10 @@ std::shared_ptr<FFmpegDecoder::Frame> FFmpegDecoder::getAudioFrame() {
 
 bool FFmpegDecoder::isVideo() {
     return !videoIsCover;
+}
+
+bool FFmpegDecoder::hasAudio() {
+    return audioIndex >= 0;
 }
 
 double FFmpegDecoder::getFps() {
@@ -214,6 +222,23 @@ void FFmpegDecoder::setAudioSpec(SDL_AudioSpec audio_spec) {
     av_channel_layout_default(&audioDst.channelLayout, audio_spec.channels);
 }
 
+void FFmpegDecoder::updateAudioClock(int lens, int64_t newFrame) {
+    if (newFrame) {
+        audioClock.pts = newFrame;
+    } else {
+        static double temp = (audioDst.channelLayout.nb_channels *av_get_bytes_per_sample(audioDst.sampleFormat)) * audioDst.freq * av_q2d(pFormatCtx->streams[audioIndex]->time_base);
+        audioClock.pts += (double) lens / temp;
+    }
+}
+
+int64_t FFmpegDecoder::getAudioTimePts() {
+    return audioClock.pts;
+}
+
+double FFmpegDecoder::getDelay(int64_t videoPts) {
+    return videoPts * av_q2d(pFormatCtx->streams[videoIndex]->time_base) - audioClock.pts * av_q2d(pFormatCtx->streams[audioIndex]->time_base);
+}
+
 
 void FFmpegDecoder::readPacket() {
     audioDecoder.decodeThread = std::thread(&FFmpegDecoder::audioDecode, this);
@@ -242,16 +267,18 @@ void FFmpegDecoder::readPacket() {
                 if (videoIndex >= 0) {
                     if (!videoIsCover) {
                         videoDecoder.packetQueue.clear();
-                        mutexAudioCodec.lock();
+                        mutexVideoCodec.lock();
                         avcodec_flush_buffers(videoDecoder.pAVCtx);
-                        mutexAudioCodec.unlock();
+                        mutexVideoCodec.unlock();
+                        videoDecoder.frameQueue.clear();
                     }
                 }
                 if (audioIndex >= 0) {
                     audioDecoder.packetQueue.clear();
-                    mutexVideoCodec.lock();
+                    mutexAudioCodec.lock();
                     avcodec_flush_buffers(audioDecoder.pAVCtx);
-                    mutexVideoCodec.unlock();
+                    mutexAudioCodec.unlock();
+                    audioDecoder.frameQueue.clear();
                 }
             }
             if (curTime + seekReqTime > duration) {
@@ -278,12 +305,13 @@ void FFmpegDecoder::readPacket() {
         } else if (pAVpkt->stream_index == audioIndex) {
             audioDecoder.packetQueue.push(packet);
         }
+        // std::printf("%ld \n", videoDecoder.packetQueue.size());
     }
 
     avformat_close_input(&pFormatCtx);
 
     std::printf("FFmpegDecoder exiting...\n");
-    running = false;
+    stopped = true;
 }
 
 void FFmpegDecoder::videoDecode() {
@@ -334,6 +362,7 @@ void FFmpegDecoder::videoDecode() {
                 }
             std::shared_ptr<Frame> frame = std::make_shared<Frame>();
             frame->data = pAVframeRGB;
+            frame->videoPts = clock.videoPts;
 
             // push to queue
             videoDecoder.frameQueue.push(frame);
@@ -345,6 +374,10 @@ void FFmpegDecoder::videoDecode() {
             }
         }
     }
+    videoDecoder.packetQueue.clear();
+    avcodec_flush_buffers(videoDecoder.pAVCtx);
+    videoDecoder.frameQueue.clear();
+
     av_frame_free(&pAVframe);
     sws_freeContext(pSwsCtx);
     avcodec_free_context(&videoDecoder.pAVCtx);
@@ -398,11 +431,17 @@ void FFmpegDecoder::audioDecode() {
 
             std::shared_ptr<Frame> frame = std::make_shared<Frame>();
             frame->audioData = outBuffer;
-            frame->audioSampleSize = outBufferSize;
+            frame->audioBufferSize = outBufferSize;
+            frame->audioPts = clock.audioPts;
+
             // push to queue
             audioDecoder.frameQueue.push(frame);
         }
     }
+    audioDecoder.packetQueue.clear();
+    avcodec_flush_buffers(audioDecoder.pAVCtx);
+    audioDecoder.frameQueue.clear();
+
     av_frame_free(&pAVframe);
     swr_free(&pSwrCtx);
     avcodec_free_context(&audioDecoder.pAVCtx);

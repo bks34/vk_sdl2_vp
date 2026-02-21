@@ -192,19 +192,46 @@ void VulkanSDL2App::run() {
         // Avoid high cpu usage on the main thread
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    while (!drawThreadExited || !ffmpegDecoder->isEnded()) {}
+
+    while (!drawThreadExited) {}
     std::printf("application exiting...\n");
 }
 
 void VulkanSDL2App::draw() {
-    const double dt = ffmpegDecoder->getDeltaTime();
-    while (running) {
-        auto time1 = std::chrono::high_resolution_clock::now();
-        DrawFrame();
-        auto time2 = std::chrono::high_resolution_clock::now();
-        long sleepTime = static_cast<long>(dt * 1000) - std::chrono::duration_cast<std::chrono::milliseconds>(time2 - time1).count();
-        std::this_thread::sleep_for(std::chrono::milliseconds(sleepTime > 0 ? sleepTime : 0));
+    double dt = ffmpegDecoder->getDeltaTime();
+    if (ffmpegDecoder->hasAudio()) {
+        while (running) {
+            if (ffmpegDecoder->isStopped()) {
+                break;
+            }
+            auto frame = ffmpegDecoder->getVideoFrame();
+
+            long long sleepTime = ffmpegDecoder->getDelay(frame->videoPts) * 1000000;
+            if (sleepTime >= 0) {
+                if (sleepTime > 500000) {
+                    sleepTime = static_cast<long long>(dt * 1000000);
+                }
+                std::this_thread::sleep_for(std::chrono::microseconds(sleepTime));
+            } else if (sleepTime < -100000) {
+                continue;
+            }
+
+            DrawFrame(frame);
+        }
+    } else {
+        while (running) {
+            if (ffmpegDecoder->isStopped()) {
+                break;
+            }
+            auto t1 = std::chrono::high_resolution_clock::now();
+            auto frame = ffmpegDecoder->getVideoFrame();
+            DrawFrame(frame);
+            auto t2 = std::chrono::high_resolution_clock::now();
+            long long sleepTime = static_cast<long long>(dt * 1000000) -  std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+            std::this_thread::sleep_for(std::chrono::microseconds(sleepTime < 0 ? 0 : sleepTime));
+        }
     }
+
     graphicsQueue.waitIdle();
     presentQueue.waitIdle();
     std::printf("drawThread exiting...\n");
@@ -832,7 +859,7 @@ void VulkanSDL2App::createSyncObjects() {
     }
 }
 
-void VulkanSDL2App::DrawFrame() {
+void VulkanSDL2App::DrawFrame(std::shared_ptr<FFmpegDecoder::Frame> frame) {
     if (device.waitForFences(1, &inFlightFences[currentFrame],
         vk::True, UINT64_MAX) != vk::Result::eSuccess) {
         throw std::runtime_error("waitForFences error!");
@@ -852,7 +879,7 @@ void VulkanSDL2App::DrawFrame() {
         return;
     }
 
-    updateTexture(imageIndex);
+    updateTexture(imageIndex, std::move(frame));
 
     if (device.resetFences(1, &inFlightFences[currentFrame]) != vk::Result::eSuccess) {
         throw std::runtime_error("failed to reset fence!");
@@ -914,12 +941,12 @@ void VulkanSDL2App::reCreateSwapChain() {
     frameBufferResized = false;
 }
 
-void VulkanSDL2App::updateTexture(uint32_t imageIndex) {
+void VulkanSDL2App::updateTexture(uint32_t imageIndex, std::shared_ptr<FFmpegDecoder::Frame> frame) {
     if (textures[imageIndex].useful) {
         textures[imageIndex].destroy();
     }
 
-    auto frame = ffmpegDecoder->getVideoFrame();
+    // auto frame = ffmpegDecoder->getVideoFrame();
 
     int textureWidth = frame->data->width;
     int textureHeight = frame->data->height;
