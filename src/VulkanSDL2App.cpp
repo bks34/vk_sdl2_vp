@@ -43,50 +43,20 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyDebugUtilsMessengerEXT( VkInstance instance,
 }
 
 
-VulkanSDL2App::VulkanSDL2App(std::string title, int width, int height, bool DiscreteGpuFirst) {
+VulkanSDL2App::VulkanSDL2App(std::string title, int width, int height, Config config) {
     this->title = title;
     this->windowWidth = width;
     this->windowHeight = height;
-    this->DiscreteGpuFirst = DiscreteGpuFirst;
+    this->config = config;
 
     initWindow();
     initVulkan();
 }
 
 VulkanSDL2App::~VulkanSDL2App() {
-    cleanupSwapChain();
-
-    device.destroyPipeline(graphicsPipeline);
-
-    device.destroyPipelineLayout(graphicsPipelineLayout);
-
-    device.destroyDescriptorPool(graphicsDescriptorPool);
-
-    device.destroyDescriptorSetLayout(graphicsDescriptorSetLayout);
-
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        device.destroySemaphore(imageAvailableSemaphores[i]);
-        device.destroySemaphore(renderFinishedSemaphores[i]);
-        device.destroyFence(inFlightFences[i]);
+    if (instance != VK_NULL_HANDLE) {
+        destroyVulkan();
     }
-
-    device.destroyRenderPass(renderPass);
-
-    textures = std::vector<Texture>();
-
-    device.destroyBuffer(vertexBuffer);
-    device.freeMemory(vertexBufferMemory);
-
-    device.freeCommandBuffers(commandPool, commandBuffers.size(), commandBuffers.data());
-    device.destroyCommandPool(commandPool);
-
-    device.destroy();
-
-    if (enableValidationLayers) {
-        instance.destroyDebugUtilsMessengerEXT(debugMessenger);
-    }
-    instance.destroySurfaceKHR(surface);
-    instance.destroy();
 }
 
 void VulkanSDL2App::run() {
@@ -98,13 +68,13 @@ void VulkanSDL2App::run() {
     printAppInfos();
 
     drawThread = std::thread(&VulkanSDL2App::draw, this);
+    drawThreadRunning = true;
     drawThread.detach();
 
     while (running) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
-                ffmpegDecoder->stop();
                 break;
             }
             switch (event.type) {
@@ -113,7 +83,6 @@ void VulkanSDL2App::run() {
                         case SDLK_ESCAPE:
                         case SDLK_q:
                             running = false;
-                            ffmpegDecoder->stop();
                             break;
                         case SDLK_SPACE:
                         case SDLK_p:
@@ -193,18 +162,32 @@ void VulkanSDL2App::run() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
+    ffmpegDecoder->stop();
+    while (!ffmpegDecoder->isStopped()) {}
+
+    audioPlayer->stop();
+
+    drawThreadRunning = false;
     while (!drawThreadExited) {}
+
+
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+
     std::printf("application exiting...\n");
 }
 
 void VulkanSDL2App::draw() {
     double dt = ffmpegDecoder->getDeltaTime();
     if (ffmpegDecoder->isVideo() && ffmpegDecoder->hasAudio()) {
-        while (running) {
+        while (drawThreadRunning) {
             if (ffmpegDecoder->isStopped()) {
                 break;
             }
             auto frame = ffmpegDecoder->getVideoFrame();
+            if (!frame->data) {
+                continue;
+            }
 
             long long sleepTime = ffmpegDecoder->getDelay(frame->videoPts) * 1000000;
             if (sleepTime >= 0) {
@@ -219,12 +202,15 @@ void VulkanSDL2App::draw() {
             DrawFrame(frame);
         }
     } else {
-        while (running) {
+        while (drawThreadRunning) {
             if (ffmpegDecoder->isStopped()) {
                 break;
             }
             auto t1 = std::chrono::high_resolution_clock::now();
             auto frame = ffmpegDecoder->getVideoFrame();
+            if (!frame->data) {
+                continue;
+            }
             DrawFrame(frame);
             auto t2 = std::chrono::high_resolution_clock::now();
             long long sleepTime = static_cast<long long>(dt * 1000000) -  std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
@@ -248,7 +234,7 @@ void VulkanSDL2App::initWindow() {
 
     audioPlayer = new SDLAudioPlayer();
     auto spec = audioPlayer->getAudioSpec();
-    ffmpegDecoder = new FFmpegDecoder(this->title, spec);
+    ffmpegDecoder = new FFmpegDecoder(this->title, spec, config.autoReplay);
     audioPlayer->setFFmpegDecoder(ffmpegDecoder);
 
     if (SDL_GetNumVideoDisplays() < 0) {
@@ -337,6 +323,42 @@ void VulkanSDL2App::togglePause() {
 
 void VulkanSDL2App::updateVolume(int sign) {
     audioPlayer->updateVolume(sign);
+}
+
+void VulkanSDL2App::destroyVulkan() {
+    cleanupSwapChain();
+
+    device.destroyPipeline(graphicsPipeline);
+
+    device.destroyPipelineLayout(graphicsPipelineLayout);
+
+    device.destroyDescriptorPool(graphicsDescriptorPool);
+
+    device.destroyDescriptorSetLayout(graphicsDescriptorSetLayout);
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        device.destroySemaphore(imageAvailableSemaphores[i]);
+        device.destroySemaphore(renderFinishedSemaphores[i]);
+        device.destroyFence(inFlightFences[i]);
+    }
+
+    device.destroyRenderPass(renderPass);
+
+    textures = std::vector<Texture>();
+
+    device.destroyBuffer(vertexBuffer);
+    device.freeMemory(vertexBufferMemory);
+
+    device.freeCommandBuffers(commandPool, commandBuffers.size(), commandBuffers.data());
+    device.destroyCommandPool(commandPool);
+
+    device.destroy();
+
+    if (enableValidationLayers) {
+        instance.destroyDebugUtilsMessengerEXT(debugMessenger);
+    }
+    instance.destroySurfaceKHR(surface);
+    instance.destroy();
 }
 
 void VulkanSDL2App::initVulkan() {
@@ -434,7 +456,7 @@ void VulkanSDL2App::pickPhysicalDevice() {
     }
 
     physicalDevice = suitableDevices[0];
-    if (DiscreteGpuFirst) {
+    if (config.DiscreteGpuFirst) {
         for (const auto& dev : suitableDevices) {
             if (dev.getProperties().deviceType == vk::PhysicalDeviceType::eDiscreteGpu) {
                 physicalDevice = dev;

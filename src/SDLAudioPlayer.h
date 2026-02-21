@@ -25,6 +25,8 @@ public:
 
     void pause();
 
+    void stop();
+
     void updateVolume(int sign);
 
 private:

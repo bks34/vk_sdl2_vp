@@ -7,12 +7,22 @@
 #include "FFmpegDecoder.h"
 #include "SDLAudioPlayer.h"
 
+struct Config {
+
+    bool DiscreteGpuFirst = false;
+
+    bool autoReplay = false;
+};
+
 class VulkanSDL2App {
 public:
-    VulkanSDL2App(std::string title, int width, int height, bool DiscreteGpuFirst);
+    VulkanSDL2App(std::string title, int width, int height, Config config);
     ~VulkanSDL2App();
 
     void run();
+
+    Config config;
+
 private:
     struct QueueFamilyIndices {
         std::optional<uint32_t> graphicsAndComputeFamily;
@@ -60,7 +70,6 @@ private:
 
     // data
     std::string title;
-    bool DiscreteGpuFirst = false;
 
     // about window size
     std::mutex windowResizeMutex;
@@ -78,6 +87,7 @@ private:
 
     // data about vulkan
     std::atomic<bool> drawThreadExited = false;
+    std::atomic<bool> drawThreadRunning = false;
     std::thread drawThread;
     void draw();
 
@@ -160,6 +170,8 @@ private:
     void updateVolume(int sign);
 
     // functions about vulkan
+    void destroyVulkan();
+
     void initVulkan();
     void createInstance();
     void createSurface();

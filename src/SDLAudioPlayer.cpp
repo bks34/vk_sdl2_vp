@@ -50,6 +50,10 @@ void SDLAudioPlayer::pause() {
     SDL_PauseAudioDevice(deviceID_, 1);
 }
 
+void SDLAudioPlayer::stop() {
+    SDL_CloseAudioDevice(deviceID_);
+}
+
 void SDLAudioPlayer::updateVolume(int sign) {
     int t = volume_ + sign * std::max(volume_ / 8, 4);
     if (t >= 0 && t <= maxVolume_) {

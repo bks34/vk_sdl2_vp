@@ -20,8 +20,9 @@ static std::map<SDL_AudioFormat, AVSampleFormat> AUDIO_FORMAT_MAP = {
     {AUDIO_F32SYS, AV_SAMPLE_FMT_FLT}
 };
 
-FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& audio_spec) {
+FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& audio_spec, bool replay) {
     this->filename = filename;
+    this->replay = replay;
     videoDecoder.setMaxFrameSize(5);
     audioDecoder.setMaxFrameSize(10);
 
@@ -298,7 +299,21 @@ void FFmpegDecoder::readPacket() {
 
         AVPacket* pAVpkt = av_packet_alloc();
         if (av_read_frame(pFormatCtx, pAVpkt) < 0) {
-            running = false;
+            if (replay) {
+                double curTime = 0.0;
+                if (audioIndex >= 0) {
+                    curTime = clock.audioTime;
+                } else {
+                    curTime = clock.videoTime;
+                }
+                seekTime(-curTime);
+                av_packet_unref(pAVpkt);
+                std::cout << "Play again" << std::endl;
+                continue;
+            }
+            std::cout << "Playback finished" << std::endl;
+            av_packet_unref(pAVpkt);
+            exit(0);
         }
         std::shared_ptr<Packet> packet = std::make_shared<Packet>();
         packet->data = pAVpkt;
@@ -307,16 +322,20 @@ void FFmpegDecoder::readPacket() {
         } else if (pAVpkt->stream_index == audioIndex) {
             audioDecoder.packetQueue.push(packet);
         }
-        // std::printf("%ld \n", videoDecoder.packetQueue.size());
     }
+
+    videoDecoder.threadRunning = false;
+    audioDecoder.threadRunning = false;
+
+    while (!videoDecoder.threadStopped || !audioDecoder.threadStopped) {}
 
     avformat_close_input(&pFormatCtx);
 
     audioDecoder.packetQueue.clear();
     videoDecoder.packetQueue.clear();
 
-    videoDecoder.threadRunning = false;
-    audioDecoder.threadRunning = false;
+    videoDecoder.frameQueue.clear();
+    audioDecoder.frameQueue.clear();
 
     stopped = true;
     std::printf("FFmpegDecoder exiting...\n");
@@ -394,7 +413,7 @@ void FFmpegDecoder::videoDecode() {
     avcodec_flush_buffers(videoDecoder.pAVCtx);
     avcodec_free_context(&videoDecoder.pAVCtx);
 
-    videoDecoder.frameQueue.clear();
+    videoDecoder.threadStopped = true;
 }
 
 void FFmpegDecoder::audioDecode() {
@@ -453,12 +472,10 @@ void FFmpegDecoder::audioDecode() {
         }
     }
 
-
-
     av_frame_free(&pAVframe);
     swr_free(&pSwrCtx);
     avcodec_flush_buffers(audioDecoder.pAVCtx);
     avcodec_free_context(&audioDecoder.pAVCtx);
 
-    audioDecoder.frameQueue.clear();
+    audioDecoder.threadStopped = true;
 }

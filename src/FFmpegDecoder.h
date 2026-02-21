@@ -24,7 +24,7 @@ extern "C"
 
 class FFmpegDecoder {
 public:
-    explicit FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& audio_spec);
+    explicit FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& audio_spec, bool replay);
 
     void run();
 
@@ -89,6 +89,7 @@ private:
     std::string filename;
     double duration;
     double fps;
+    bool replay;
     AVFormatContext* pFormatCtx;
     int videoIndex = -1, audioIndex = -1;
     bool videoIsCover = false;
@@ -137,6 +138,7 @@ private:
         size_t maxFrameQueueSize = 0;
         std::thread decodeThread;
         std::atomic<bool> threadRunning = false;
+        std::atomic<bool> threadStopped = false;
     };
 
     DecoderInfo videoDecoder;
