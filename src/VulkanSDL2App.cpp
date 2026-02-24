@@ -62,7 +62,9 @@ VulkanSDL2App::~VulkanSDL2App() {
 void VulkanSDL2App::run() {
     SDL_Event event;
 
-    audioPlayer->run();
+    if (ffmpegDecoder->hasAudio()) {
+        audioPlayer->run();
+    }
     ffmpegDecoder->run();
 
     printAppInfos();
@@ -159,7 +161,7 @@ void VulkanSDL2App::run() {
             }
         }
         // Avoid high cpu usage on the main thread
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
     ffmpegDecoder->stop();

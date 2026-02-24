@@ -51,6 +51,7 @@ void SDLAudioPlayer::pause() {
 }
 
 void SDLAudioPlayer::stop() {
+    pause();
     SDL_CloseAudioDevice(deviceID_);
 }
 
@@ -81,6 +82,12 @@ void SDLAudioPlayer::fillAudio(Uint8 *stream, int len) {
             if (buffer_) {
                 free(buffer_);
                 buffer_ = nullptr;
+            }
+            while (!ffmpegDecoder->audioFrameReady()) {
+                if (ffmpegDecoder->isStopped()) {
+                    stop();
+                    return;
+                }
             }
             auto frame = ffmpegDecoder->getAudioFrame();
 

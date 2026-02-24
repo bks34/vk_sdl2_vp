@@ -73,7 +73,10 @@ public:
 
     std::array<int, 2> getVideoSize();
 
+    // about sdl2 audio
     void setAudioSpec(SDL_AudioSpec audio_spec);
+
+    bool audioFrameReady();
 
     // audio clock, for sync
     struct AudioClock {
@@ -155,8 +158,6 @@ private:
 
     // data about video stream
     SwsContext* pSwsCtx = nullptr;
-    int64_t numOfSubmittedVideoFrames = 0;
-    int64_t numOfDecodedVideoFrames = 0;
     int fps_den, fps_num;
     int width, height;
 

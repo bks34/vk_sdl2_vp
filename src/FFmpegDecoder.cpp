@@ -154,10 +154,6 @@ bool FFmpegDecoder::isStopped() {
 std::shared_ptr<FFmpegDecoder::Frame> FFmpegDecoder::getVideoFrame() {
     std::shared_ptr<FFmpegDecoder::Frame> frame;
 
-    if (numOfSubmittedVideoFrames < numOfDecodedVideoFrames) {
-        numOfSubmittedVideoFrames++;
-    }
-
     if (videoDecoder.frameQueue.size() > 1) {
         videoDecoder.frameQueue.pop(frame);
     } else {
@@ -223,6 +219,10 @@ void FFmpegDecoder::setAudioSpec(SDL_AudioSpec audio_spec) {
     av_channel_layout_default(&audioDst.channelLayout, audio_spec.channels);
 }
 
+bool FFmpegDecoder::audioFrameReady() {
+    return audioDecoder.frameQueue.size() > 0;
+}
+
 void FFmpegDecoder::updateAudioClock(int lens, int64_t newFrame) {
     if (newFrame) {
         audioClock.pts = newFrame;
@@ -242,12 +242,21 @@ double FFmpegDecoder::getDelay(int64_t videoPts) {
 
 
 void FFmpegDecoder::readPacket() {
-    audioDecoder.decodeThread = std::thread(&FFmpegDecoder::audioDecode, this);
-    audioDecoder.threadRunning = true;
-    audioDecoder.decodeThread.detach();
-    videoDecoder.decodeThread = std::thread(&FFmpegDecoder::videoDecode, this);
-    videoDecoder.threadRunning = true;
-    videoDecoder.decodeThread.detach();
+    if (audioIndex >= 0) {
+        audioDecoder.decodeThread = std::thread(&FFmpegDecoder::audioDecode, this);
+        audioDecoder.threadRunning = true;
+        audioDecoder.decodeThread.detach();
+    } else {
+        audioDecoder.threadStopped = true;
+    }
+    if (videoIndex >= 0) {
+        videoDecoder.decodeThread = std::thread(&FFmpegDecoder::videoDecode, this);
+        videoDecoder.threadRunning = true;
+        videoDecoder.decodeThread.detach();
+    } else {
+        videoDecoder.threadStopped = true;
+    }
+
 
     while (running) {
         while (paused) {}
@@ -313,13 +322,25 @@ void FFmpegDecoder::readPacket() {
             }
             std::cout << "Playback finished" << std::endl;
             av_packet_unref(pAVpkt);
-            exit(0);
+            break;
         }
         std::shared_ptr<Packet> packet = std::make_shared<Packet>();
         packet->data = pAVpkt;
         if (pAVpkt->stream_index == videoIndex) {
+            while (videoDecoder.packetQueue.full()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                if (!running) {
+                    break;
+                }
+            }
             videoDecoder.packetQueue.push(packet);
         } else if (pAVpkt->stream_index == audioIndex) {
+            while (audioDecoder.packetQueue.full()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                if (!running) {
+                    break;
+                }
+            }
             audioDecoder.packetQueue.push(packet);
         }
     }
@@ -344,9 +365,16 @@ void FFmpegDecoder::readPacket() {
 void FFmpegDecoder::videoDecode() {
     AVFrame* pAVframe = av_frame_alloc();
     while (videoDecoder.threadRunning) {
+        while (paused) {}
         std::shared_ptr<Packet> pPacket;
-
+        while (!videoDecoder.packetQueue.size()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (videoDecoder.threadRunning) {
+                break;
+            }
+        }
         videoDecoder.packetQueue.pop(pPacket);
+
         mutexVideoCodec.lock();
         int ret = avcodec_send_packet(videoDecoder.pAVCtx, pPacket->data);
         int gotFrame = avcodec_receive_frame(videoDecoder.pAVCtx, pAVframe);
@@ -392,9 +420,13 @@ void FFmpegDecoder::videoDecode() {
             frame->videoPts = clock.videoPts;
 
             // push to queue
+            while (videoDecoder.frameQueue.full()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                if (!videoDecoder.threadRunning) {
+                    break;
+                }
+            }
             videoDecoder.frameQueue.push(frame);
-
-            numOfDecodedVideoFrames++;
 
             if (videoIsCover) {
                 break;
@@ -419,9 +451,16 @@ void FFmpegDecoder::videoDecode() {
 void FFmpegDecoder::audioDecode() {
     AVFrame* pAVframe = av_frame_alloc();
     while (audioDecoder.threadRunning) {
+        while (paused) {}
         std::shared_ptr<Packet> pPacket;
-
+        while (!audioDecoder.packetQueue.size()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (audioDecoder.threadRunning) {
+                break;
+            }
+        }
         audioDecoder.packetQueue.pop(pPacket);
+
         mutexAudioCodec.lock();
         int ret = avcodec_send_packet(audioDecoder.pAVCtx, pPacket->data);
         int gotFrame = avcodec_receive_frame(audioDecoder.pAVCtx, pAVframe);
@@ -468,6 +507,12 @@ void FFmpegDecoder::audioDecode() {
             frame->audioPts = clock.audioPts;
 
             // push to queue
+            while (audioDecoder.frameQueue.full()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                if (!audioDecoder.threadRunning) {
+                    break;
+                }
+            }
             audioDecoder.frameQueue.push(frame);
         }
     }

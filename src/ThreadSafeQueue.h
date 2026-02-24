@@ -25,6 +25,11 @@ public:
         return queue_.size();
     }
 
+    bool full() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return queue_.size() == max_size_;
+    }
+
     void push(T item);
 
     void pop(T& item);
@@ -35,7 +40,7 @@ public:
 
 private:
     std::queue<T> queue_;
-    size_t max_size_ = 10;
+    size_t max_size_ = 30;
 
     std::mutex mutex_;
     std::condition_variable not_empty_;
