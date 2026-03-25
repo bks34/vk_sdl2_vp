@@ -72,7 +72,7 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
 
         // Video Codec Context
         videoDecoder.pAVCtx = avcodec_alloc_context3(nullptr);
-        videoDecoder.pAVCtx->thread_count = 2;
+        videoDecoder.pAVCtx->thread_count = 4;
         videoDecoder.pAVCtx->thread_type = FF_THREAD_FRAME;
         avcodec_parameters_to_context(videoDecoder.pAVCtx, pFormatCtx->streams[videoIndex]->codecpar);
 

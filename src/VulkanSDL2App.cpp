@@ -182,6 +182,7 @@ void VulkanSDL2App::run() {
 void VulkanSDL2App::draw() {
     double dt = ffmpegDecoder->getDeltaTime();
     if (ffmpegDecoder->isVideo() && ffmpegDecoder->hasAudio()) {
+        long long drawTime = 0;
         while (drawThreadRunning) {
             if (ffmpegDecoder->isStopped()) {
                 break;
@@ -191,7 +192,7 @@ void VulkanSDL2App::draw() {
                 continue;
             }
 
-            long long sleepTime = ffmpegDecoder->getDelay(frame->videoPts) * 1000000;
+            long long sleepTime = ffmpegDecoder->getDelay(frame->videoPts) * 1000000 - drawTime;
             if (sleepTime >= 0) {
                 if (sleepTime > 500000) {
                     sleepTime = static_cast<long long>(dt * 1000000);
@@ -200,8 +201,10 @@ void VulkanSDL2App::draw() {
             } else if (sleepTime < -100000) {
                 continue;
             }
-
+            auto t1 = std::chrono::high_resolution_clock::now();
             DrawFrame(frame);
+            auto t2 = std::chrono::high_resolution_clock::now();
+            drawTime = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
         }
     } else {
         while (drawThreadRunning) {
