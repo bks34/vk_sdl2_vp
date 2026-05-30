@@ -3,6 +3,7 @@
 #include <SDL2/SDL_vulkan.h>
 #include <string>
 #include <optional>
+#include <chrono>
 #include <glm/glm.hpp>
 #include "FFmpegDecoder.h"
 #include "SDLAudioPlayer.h"

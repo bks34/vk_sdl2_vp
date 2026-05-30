@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(vk_sdl2_vp)
 
-set(CMAKE_CXX_STANDRAD 20)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDRAD_REQUIRED ON)
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
@@ -42,10 +42,12 @@ add_executable(${PROJECT_NAME}
         src/SDLAudioPlayer.h
 )
 
+
 target_link_libraries(${PROJECT_NAME}
         Vulkan::Vulkan
         glm::glm
-        SDL2::SDL2
+        $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
+        $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
         ${FFMPEG_LIBRARIES}
 )
 

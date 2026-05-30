@@ -273,7 +273,7 @@ void VulkanSDL2App::initWindow() {
 
     window = SDL_CreateWindow(
         title.data(),
-        0, 0, windowWidth, windowHeight,
+        (displayWidth - windowWidth) / 2, (displayHeight - windowHeight) / 2, windowWidth, windowHeight,
         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 
     if (window == nullptr) {
@@ -473,7 +473,7 @@ void VulkanSDL2App::pickPhysicalDevice() {
             }
         }
     }
-    physicalDeviceName = std::string(physicalDevice.getProperties().deviceName);
+    physicalDeviceName = std::string(physicalDevice.getProperties().deviceName.data());
 }
 
 void VulkanSDL2App::createLogicalDevice() {
@@ -966,9 +966,9 @@ void VulkanSDL2App::reCreateSwapChain() {
 }
 
 void VulkanSDL2App::updateTexture(uint32_t imageIndex, std::shared_ptr<FFmpegDecoder::Frame> frame) {
-    if (textures[imageIndex].useful) {
-        textures[imageIndex].destroy();
-    }
+    //if (textures[imageIndex].useful) {
+    //    textures[imageIndex].destroy();
+    //}
 
     // auto frame = ffmpegDecoder->getVideoFrame();
 
@@ -987,17 +987,18 @@ void VulkanSDL2App::updateTexture(uint32_t imageIndex, std::shared_ptr<FFmpegDec
     memcpy(data, frame->data->data[0], static_cast<size_t>(imageSize));
     device.unmapMemory(stagingMemory);
 
+    if (!textures[imageIndex].useful) {
+        createImage(static_cast<uint32_t>(textureWidth), static_cast<uint32_t>(textureHeight), 1, vk::SampleCountFlagBits::e1,
+            vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
+            vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst
+            | vk::ImageUsageFlagBits::eSampled, vk::MemoryPropertyFlagBits::eDeviceLocal,
+            textures[imageIndex].image, textures[imageIndex].memory
+        );
 
-    createImage(static_cast<uint32_t>(textureWidth), static_cast<uint32_t>(textureHeight), 1, vk::SampleCountFlagBits::e1,
-        vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst
-        | vk::ImageUsageFlagBits::eSampled, vk::MemoryPropertyFlagBits::eDeviceLocal,
-        textures[imageIndex].image, textures[imageIndex].memory
-    );
-
-    transitionImageLayout(textures[imageIndex].image, vk::Format::eR8G8B8A8Srgb,
-        vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, 1
-    );
+        transitionImageLayout(textures[imageIndex].image, vk::Format::eR8G8B8A8Srgb,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, 1
+        );
+    }
 
     copyBufferToImage(
         stagingBuffer, textures[imageIndex].image,
@@ -1007,35 +1008,39 @@ void VulkanSDL2App::updateTexture(uint32_t imageIndex, std::shared_ptr<FFmpegDec
     device.destroyBuffer(stagingBuffer);
     device.freeMemory(stagingMemory);
 
-    transitionImageLayout(textures[imageIndex].image, vk::Format::eR8G8B8A8Srgb,
-        vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, 1
-    );
+    if (!textures[imageIndex].useful) {
+        transitionImageLayout(textures[imageIndex].image, vk::Format::eR8G8B8A8Srgb,
+            vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, 1
+        );
 
-    // create image view
-    textures[imageIndex].imageView = device.createImageView(
-        vk::ImageViewCreateInfo(
-            {}, textures[imageIndex].image,
-            vk::ImageViewType::e2D, vk::Format::eR8G8B8A8Srgb, {},
-            vk::ImageSubresourceRange(
-                vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1
+        // create image view
+        textures[imageIndex].imageView = device.createImageView(
+            vk::ImageViewCreateInfo(
+                {}, textures[imageIndex].image,
+                vk::ImageViewType::e2D, vk::Format::eR8G8B8A8Srgb, {},
+                vk::ImageSubresourceRange(
+                    vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1
+                )
             )
-        )
-    );
+        );
 
-    // create sampler
-    textures[imageIndex].sampler = device.createSampler(
-        vk::SamplerCreateInfo(
-            {}, vk::Filter::eLinear, vk::Filter::eLinear,
-            vk::SamplerMipmapMode::eLinear,
-            vk::SamplerAddressMode::eRepeat,
-            vk::SamplerAddressMode::eRepeat,
-            vk::SamplerAddressMode::eRepeat,
-            0.0f, vk::False, 0,
-            vk::False, vk::CompareOp::eAlways,
-            0.0f, 0.0f,
-            vk::BorderColor::eIntOpaqueBlack, vk::False
-        )
-    );
+        // create sampler
+        textures[imageIndex].sampler = device.createSampler(
+            vk::SamplerCreateInfo(
+                {}, vk::Filter::eLinear, vk::Filter::eLinear,
+                vk::SamplerMipmapMode::eLinear,
+                vk::SamplerAddressMode::eRepeat,
+                vk::SamplerAddressMode::eRepeat,
+                vk::SamplerAddressMode::eRepeat,
+                0.0f, vk::False, 0,
+                vk::False, vk::CompareOp::eAlways,
+                0.0f, 0.0f,
+                vk::BorderColor::eIntOpaqueBlack, vk::False
+            )
+        );
+    }
+
+    
 
     // update descriptor set
     vk::DescriptorImageInfo imageInfo = {

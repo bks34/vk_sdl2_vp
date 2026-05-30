@@ -27,6 +27,7 @@ SDLAudioPlayer::SDLAudioPlayer() {
     if (!deviceID_) {
         std::cerr << "Can't open Audio Device: " <<SDL_GetError() << std::endl;
     }
+	spec_ = obtainedSpec;
 }
 
 void SDLAudioPlayer::setFFmpegDecoder(FFmpegDecoder* decoder) {
@@ -80,7 +81,7 @@ void SDLAudioPlayer::fillAudio(Uint8 *stream, int len) {
     while (len > 0) {
         if (bufferSize_ == 0) {
             if (buffer_) {
-                free(buffer_);
+                av_free(buffer_);
                 buffer_ = nullptr;
             }
             while (!ffmpegDecoder->audioFrameReady()) {

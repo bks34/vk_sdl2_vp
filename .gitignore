@@ -5,3 +5,6 @@
 /AppDir/
 /shaders/frag.spv
 /shaders/vert.spv
+/.vs
+/out
+/CMakeSettings.json

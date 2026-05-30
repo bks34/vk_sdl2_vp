@@ -9,7 +9,7 @@
 #include <map>
 #include <SDL_cpuinfo.h>
 #include <stdexcept>
-#include <bits/ostream.tcc>
+
 
 
 static std::map<SDL_AudioFormat, AVSampleFormat> AUDIO_FORMAT_MAP = {
@@ -48,6 +48,12 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
     audioIndex = av_find_best_stream(pFormatCtx, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
     hasVideo = videoIndex >= 0;
     hasAudio = audioIndex >= 0;
+
+	// for debug
+    //audioIndex = -1;
+	//hasAudio = false;
+    //
+
     if (!(hasVideo || hasAudio)) {
         throw std::runtime_error("Couldn't find video or audio stream");
     }
@@ -270,7 +276,8 @@ void FFmpegDecoder::readPacket() {
             int64_t targetTs = (curTime + seekReqTime > duration) ?
                 (duration - 0.5) * AV_TIME_BASE : (curTime + seekReqTime) * AV_TIME_BASE;
 
-            if (int ret; (ret = avformat_seek_file(pFormatCtx, -1, INT64_MIN, targetTs, INT64_MAX, AVSEEK_FLAG_BACKWARD) < 0)) {
+            int ret;
+            if ((ret = avformat_seek_file(pFormatCtx, -1, INT64_MIN, targetTs, INT64_MAX, AVSEEK_FLAG_BACKWARD) < 0)) {
                 char error[64];
                 std::cout << "failed to seek time: " << av_make_error_string(error, sizeof(error), ret) << std::endl;
             } else {
