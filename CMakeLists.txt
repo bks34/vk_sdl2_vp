@@ -61,7 +61,7 @@ set(CPACK_GENERATOR "DEB")
 
 # 设置软件包基本信息
 set(CPACK_PACKAGE_NAME "vk_sdl2_vp")
-set(CPACK_PACKAGE_VERSION "0.1.4")
+set(CPACK_PACKAGE_VERSION "0.1.2")
 set(CPACK_PACKAGE_DESCRIPTION "一个基于vulkan + sdl2 + ffmpeg的简单的视频播放器")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Shaoquan He 2712110988@qq.com")
 

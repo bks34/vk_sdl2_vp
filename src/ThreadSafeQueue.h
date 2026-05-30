@@ -40,7 +40,7 @@ public:
 
 private:
     std::queue<T> queue_;
-    size_t max_size_ = 100;
+    size_t max_size_ = 30;
 
     std::mutex mutex_;
     std::condition_variable not_empty_;
