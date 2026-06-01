@@ -71,8 +71,17 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
         }
 
         // Video Codec Context
+        width = pFormatCtx->streams[videoIndex]->codecpar->width;
+		height = pFormatCtx->streams[videoIndex]->codecpar->height;
+
         videoDecoder.pAVCtx = avcodec_alloc_context3(nullptr);
         videoDecoder.pAVCtx->thread_count = 2;
+        if (width >= 1920 || height >= 1080) {
+			videoDecoder.pAVCtx->thread_count = 4;
+        }
+		if (width >= 2560 || height >= 1440) {
+			videoDecoder.pAVCtx->thread_count = SDL_GetCPUCount();
+		}
         videoDecoder.pAVCtx->thread_type = FF_THREAD_FRAME;
         avcodec_parameters_to_context(videoDecoder.pAVCtx, pFormatCtx->streams[videoIndex]->codecpar);
 
@@ -91,8 +100,8 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
             throw std::runtime_error("Couldn't open video decoder");
         }
 
-        width = videoDecoder.pAVCtx->width;
-        height = videoDecoder.pAVCtx->height;
+        //width = videoDecoder.pAVCtx->width;
+        //height = videoDecoder.pAVCtx->height;
         pSwsCtx = sws_getContext(width, height, videoDecoder.pAVCtx->pix_fmt,
             width, height, AV_PIX_FMT_RGBA,
             SWS_BICUBIC, nullptr, nullptr, nullptr);
@@ -376,9 +385,12 @@ void FFmpegDecoder::videoDecode() {
         std::shared_ptr<Packet> pPacket;
         while (!videoDecoder.packetQueue.size()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            if (videoDecoder.threadRunning) {
+            if (!videoDecoder.threadRunning) {
                 break;
             }
+        }
+        if (!videoDecoder.threadRunning) {
+            break;
         }
         videoDecoder.packetQueue.pop(pPacket);
 
@@ -433,6 +445,9 @@ void FFmpegDecoder::videoDecode() {
                     break;
                 }
             }
+            if (!videoDecoder.threadRunning) {
+                break;
+            }
             videoDecoder.frameQueue.push(frame);
 
             if (videoIsCover) {
@@ -462,9 +477,12 @@ void FFmpegDecoder::audioDecode() {
         std::shared_ptr<Packet> pPacket;
         while (!audioDecoder.packetQueue.size()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            if (audioDecoder.threadRunning) {
+            if (!audioDecoder.threadRunning) {
                 break;
             }
+        }
+        if (!audioDecoder.threadRunning) {
+            break;
         }
         audioDecoder.packetQueue.pop(pPacket);
 
@@ -519,6 +537,9 @@ void FFmpegDecoder::audioDecode() {
                 if (!audioDecoder.threadRunning) {
                     break;
                 }
+            }
+            if (!audioDecoder.threadRunning) {
+                break;
             }
             audioDecoder.frameQueue.push(frame);
         }
