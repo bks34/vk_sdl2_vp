@@ -25,6 +25,7 @@ int main(int argc, char* argv[]) {
     }
 
     VulkanSDL2App app(std::string(argv[1]), 1920, 1080, config);
+
     app.run();
     return 0;
 }

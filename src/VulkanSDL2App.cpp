@@ -164,13 +164,27 @@ void VulkanSDL2App::run() {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
+	auto t1 = std::chrono::high_resolution_clock::now();
+
     ffmpegDecoder->stop();
-    while (!ffmpegDecoder->isStopped()) {}
+    while (!ffmpegDecoder->isStopped()) {
+		auto t2 = std::chrono::high_resolution_clock::now();
+		if (std::chrono::duration_cast<std::chrono::seconds>(t2 - t1).count() > 2) {
+			std::printf("waited for FFmpegDecoder to stop for 2 seconds, force stop it.\n");
+            exit(1);
+		}
+    }
 
     audioPlayer->stop();
 
     drawThreadRunning = false;
-    while (!drawThreadExited) {}
+    while (!drawThreadExited) {
+		auto t2 = std::chrono::high_resolution_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(t2 - t1).count() > 2) {
+			std::printf("waited for drawThread to exit for 2 seconds, force exit it.\n");
+            exit(2);
+        }
+    }
 
 
     SDL_DestroyWindow(window);
@@ -198,7 +212,7 @@ void VulkanSDL2App::draw() {
                     sleepTime = static_cast<long long>(dt * 1000000);
                 }
                 std::this_thread::sleep_for(std::chrono::microseconds(sleepTime));
-            } else if (sleepTime < -100000) {
+            } else if (sleepTime < -1000000) {
                 continue;
             }
             auto t1 = std::chrono::high_resolution_clock::now();
