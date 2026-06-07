@@ -79,8 +79,8 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
         if (width >= 1920 || height >= 1080) {
 			videoDecoder.pAVCtx->thread_count = 4;
         }
-		if (width >= 2560 || height >= 1440) {
-			videoDecoder.pAVCtx->thread_count = SDL_GetCPUCount();
+		if (width >= 3840 || height >= 2160) {
+			videoDecoder.pAVCtx->thread_count = SDL_GetCPUCount() > 16 ? 16 : SDL_GetCPUCount();
 		}
         videoDecoder.pAVCtx->thread_type = FF_THREAD_FRAME;
         avcodec_parameters_to_context(videoDecoder.pAVCtx, pFormatCtx->streams[videoIndex]->codecpar);
