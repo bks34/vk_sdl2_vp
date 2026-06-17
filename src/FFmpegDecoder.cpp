@@ -75,12 +75,12 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
 		height = pFormatCtx->streams[videoIndex]->codecpar->height;
 
         videoDecoder.pAVCtx = avcodec_alloc_context3(nullptr);
-        videoDecoder.pAVCtx->thread_count = 2;
+        videoDecoder.pAVCtx->thread_count = 1;
         if (width >= 1920 || height >= 1080) {
-			videoDecoder.pAVCtx->thread_count = 4;
+			videoDecoder.pAVCtx->thread_count = 2;
         }
 		if (width >= 3840 || height >= 2160) {
-			videoDecoder.pAVCtx->thread_count = SDL_GetCPUCount() > 16 ? 16 : SDL_GetCPUCount();
+			videoDecoder.pAVCtx->thread_count = SDL_GetCPUCount() > 4 ? 4 : SDL_GetCPUCount();
 		}
         videoDecoder.pAVCtx->thread_type = FF_THREAD_FRAME;
         avcodec_parameters_to_context(videoDecoder.pAVCtx, pFormatCtx->streams[videoIndex]->codecpar);
@@ -290,7 +290,7 @@ void FFmpegDecoder::readPacket() {
                 char error[64];
                 std::cout << "failed to seek time: " << av_make_error_string(error, sizeof(error), ret) << std::endl;
             } else {
-                std::cout << "seeked " << seekReqTime << " s. " << std::endl;
+                std::cout<< std::endl << "seeked " << seekReqTime << " s. " << std::endl;
 
                 if (videoIndex >= 0) {
                     if (!videoIsCover) {
@@ -325,6 +325,9 @@ void FFmpegDecoder::readPacket() {
         AVPacket* pAVpkt = av_packet_alloc();
         if (av_read_frame(pFormatCtx, pAVpkt) < 0) {
             if (replay) {
+                while (videoDecoder.frameQueue.size() > 1) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
                 double curTime = 0.0;
                 if (audioIndex >= 0) {
                     curTime = clock.audioTime;

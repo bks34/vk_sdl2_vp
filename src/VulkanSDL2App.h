@@ -26,11 +26,12 @@ public:
 
 private:
     struct QueueFamilyIndices {
-        std::optional<uint32_t> graphicsAndComputeFamily;
+        std::optional<uint32_t> graphicsFamily;
         std::optional<uint32_t> presentFamily;
+        std::optional<uint32_t> transferFamily;
 
         bool isComplete() const {
-            return graphicsAndComputeFamily.has_value() && presentFamily.has_value();
+            return graphicsFamily.has_value() && presentFamily.has_value() && transferFamily.has_value();
         }
     };
 
@@ -101,8 +102,12 @@ private:
     vk::Device device;
 
     vk::Queue graphicsQueue;
-    vk::Queue computeQueue;
+    vk::Queue transferQueue;
     vk::Queue presentQueue;
+
+    uint32_t graphicsQueueFamilyIndex;
+    uint32_t transferQueueFamilyIndex;
+    uint32_t presentQueueFamilyIndex;
 
     vk::SwapchainKHR swapChain;
     std::vector<vk::Image> swapChainImages;
@@ -119,11 +124,15 @@ private:
     vk::DescriptorPool graphicsDescriptorPool;
     std::vector<vk::DescriptorSet> graphicsDescriptorSets;
 
+    vk::CommandPool commandPoolTransfer;
     vk::CommandPool commandPool;
     std::vector<vk::CommandBuffer> commandBuffers;
 
     vk::Buffer vertexBuffer;
     vk::DeviceMemory vertexBufferMemory;
+
+    vk::Buffer updateTextureStagingBuffer;
+    vk::DeviceMemory updateTextureStagingBufferMemory;
 
     struct Texture {
         explicit Texture(const vk::Device device) : device(device) {}
@@ -190,6 +199,7 @@ private:
     void createDescriptorPool();
     void createDescriptorSets();
     void initTextureResource();
+    void createUpdateTextureStagingBuffer();
     void createSyncObjects();
 
     void DrawFrame(std::shared_ptr<FFmpegDecoder::Frame> frame);

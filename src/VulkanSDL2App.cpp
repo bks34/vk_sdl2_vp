@@ -219,6 +219,14 @@ void VulkanSDL2App::draw() {
             DrawFrame(frame);
             auto t2 = std::chrono::high_resolution_clock::now();
             drawTime = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+
+            double pt = ffmpegDecoder->getRelativeTime();
+            std::printf("\rplayback time:    %02lld:%02lld:%02lld   ",
+                static_cast<long long>(pt) / 3600,
+                (static_cast<long long>(pt) - static_cast<long long>(pt) / 3600) / 60,
+                static_cast<long long>(pt - static_cast<double>(static_cast<long long>(pt) - static_cast<long long>(pt) % 60))
+            );
+            fflush(stdout);
         }
     } else {
         while (drawThreadRunning) {
@@ -368,8 +376,12 @@ void VulkanSDL2App::destroyVulkan() {
     device.destroyBuffer(vertexBuffer);
     device.freeMemory(vertexBufferMemory);
 
+    device.destroyBuffer(updateTextureStagingBuffer);
+    device.freeMemory(updateTextureStagingBufferMemory);
+
     device.freeCommandBuffers(commandPool, commandBuffers.size(), commandBuffers.data());
     device.destroyCommandPool(commandPool);
+    device.destroyCommandPool(commandPoolTransfer);
 
     device.destroy();
 
@@ -397,6 +409,7 @@ void VulkanSDL2App::initVulkan() {
     createDescriptorPool();
     createDescriptorSets();
     initTextureResource();
+    createUpdateTextureStagingBuffer();
     createSyncObjects();
 }
 
@@ -495,9 +508,14 @@ void VulkanSDL2App::pickPhysicalDevice() {
 
 void VulkanSDL2App::createLogicalDevice() {
     QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
+
+    graphicsQueueFamilyIndex = indices.graphicsFamily.value();
+    transferQueueFamilyIndex = indices.transferFamily.value();
+    presentQueueFamilyIndex = indices.presentFamily.value();
+
     std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
     std::set<uint32_t> uniqueQueueFamilies = {
-        indices.graphicsAndComputeFamily.value(), indices.presentFamily.value()
+        graphicsQueueFamilyIndex, transferQueueFamilyIndex, presentQueueFamilyIndex
     };
 
     float queuePriority = 1.0f;
@@ -524,8 +542,8 @@ void VulkanSDL2App::createLogicalDevice() {
 
     device = physicalDevice.createDevice(createInfo);
 
-    graphicsQueue = device.getQueue(indices.graphicsAndComputeFamily.value(), 0);
-    computeQueue = device.getQueue(indices.graphicsAndComputeFamily.value(), 0);
+    graphicsQueue = device.getQueue(indices.graphicsFamily.value(), 0);
+    transferQueue = device.getQueue(indices.transferFamily.value(), 0);
     presentQueue = device.getQueue(indices.presentFamily.value(), 0);
 }
 
@@ -559,9 +577,8 @@ void VulkanSDL2App::createSwapChain() {
     createInfo.imageArrayLayers = 1;
     createInfo.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
 
-    QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
-    uint32_t queueFamilyIndices[] = {indices.graphicsAndComputeFamily.value(), indices.presentFamily.value()};
-    if (indices.graphicsAndComputeFamily.value() != indices.presentFamily.value()) {
+    uint32_t queueFamilyIndices[] = {graphicsQueueFamilyIndex, presentQueueFamilyIndex};
+    if (graphicsQueueFamilyIndex != presentQueueFamilyIndex) {
         createInfo.imageSharingMode = vk::SharingMode::eConcurrent;
         createInfo.queueFamilyIndexCount = 2;
         createInfo.pQueueFamilyIndices = queueFamilyIndices;
@@ -804,13 +821,18 @@ void VulkanSDL2App::createGraphicsPipeline() {
 }
 
 void VulkanSDL2App::createCommandPool() {
-    QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
-
     vk::CommandPoolCreateInfo poolInfo = {
-        vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queueFamilyIndices.graphicsAndComputeFamily.value(),
+        vk::CommandPoolCreateFlagBits::eResetCommandBuffer, graphicsQueueFamilyIndex,
         nullptr
     };
     commandPool = device.createCommandPool(poolInfo);
+
+    vk::CommandPoolCreateInfo poolInfoTr = {
+        vk::CommandPoolCreateFlagBits::eResetCommandBuffer, transferQueueFamilyIndex,
+        nullptr
+    };
+
+    commandPoolTransfer = device.createCommandPool(poolInfoTr);
 }
 
 void VulkanSDL2App::createCommandBuffers() {
@@ -881,6 +903,17 @@ void VulkanSDL2App::createDescriptorSets() {
 void VulkanSDL2App::initTextureResource() {
     const auto texture = Texture(device);
     textures.assign(MAX_FRAMES_IN_FLIGHT, texture);
+}
+
+void VulkanSDL2App::createUpdateTextureStagingBuffer() {
+    int textureWidth = mediaWidth;
+    int textureHeight = mediaHeight;
+    vk::DeviceSize imageSize = textureWidth * textureHeight * 4;
+
+    createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc,
+        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+        updateTextureStagingBuffer, updateTextureStagingBufferMemory
+    );
 }
 
 void VulkanSDL2App::createSyncObjects() {
@@ -983,26 +1016,16 @@ void VulkanSDL2App::reCreateSwapChain() {
 }
 
 void VulkanSDL2App::updateTexture(uint32_t imageIndex, std::shared_ptr<FFmpegDecoder::Frame> frame) {
-    //if (textures[imageIndex].useful) {
-    //    textures[imageIndex].destroy();
-    //}
-
-    // auto frame = ffmpegDecoder->getVideoFrame();
 
     int textureWidth = frame->data->width;
     int textureHeight = frame->data->height;
     vk::DeviceSize imageSize = textureWidth * textureHeight * 4;
 
-    vk::Buffer stagingBuffer;
-    vk::DeviceMemory stagingMemory;
-    createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc,
-        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-        stagingBuffer, stagingMemory
-    );
-
-    void *data = device.mapMemory(stagingMemory, 0, imageSize);
+    void *data = device.mapMemory(updateTextureStagingBufferMemory, 0, imageSize);
     memcpy(data, frame->data->data[0], static_cast<size_t>(imageSize));
-    device.unmapMemory(stagingMemory);
+    device.unmapMemory(updateTextureStagingBufferMemory);
+
+
 
     if (!textures[imageIndex].useful) {
         createImage(static_cast<uint32_t>(textureWidth), static_cast<uint32_t>(textureHeight), 1, vk::SampleCountFlagBits::e1,
@@ -1011,25 +1034,23 @@ void VulkanSDL2App::updateTexture(uint32_t imageIndex, std::shared_ptr<FFmpegDec
             | vk::ImageUsageFlagBits::eSampled, vk::MemoryPropertyFlagBits::eDeviceLocal,
             textures[imageIndex].image, textures[imageIndex].memory
         );
-
-        transitionImageLayout(textures[imageIndex].image, vk::Format::eR8G8B8A8Srgb,
-            vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, 1
-        );
     }
 
+    transitionImageLayout(textures[imageIndex].image, vk::Format::eR8G8B8A8Srgb,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, 1);
+
+
     copyBufferToImage(
-        stagingBuffer, textures[imageIndex].image,
+        updateTextureStagingBuffer, textures[imageIndex].image,
         static_cast<uint32_t>(textureWidth), static_cast<uint32_t>(textureHeight)
     );
 
-    device.destroyBuffer(stagingBuffer);
-    device.freeMemory(stagingMemory);
 
-    if (!textures[imageIndex].useful) {
-        transitionImageLayout(textures[imageIndex].image, vk::Format::eR8G8B8A8Srgb,
+    transitionImageLayout(textures[imageIndex].image, vk::Format::eR8G8B8A8Srgb,
             vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, 1
         );
 
+    if (!textures[imageIndex].useful) {
         // create image view
         textures[imageIndex].imageView = device.createImageView(
             vk::ImageViewCreateInfo(
@@ -1057,7 +1078,6 @@ void VulkanSDL2App::updateTexture(uint32_t imageIndex, std::shared_ptr<FFmpegDec
         );
     }
 
-    
 
     // update descriptor set
     vk::DescriptorImageInfo imageInfo = {
@@ -1201,7 +1221,7 @@ bool VulkanSDL2App::isDeviceSuitable(vk::PhysicalDevice device) {
 
     bool supportSurface = true;
     vk::Bool32 graphicsSupported = VK_FALSE, presentSupported = VK_FALSE;
-    if (device.getSurfaceSupportKHR(indices.graphicsAndComputeFamily.value(), surface, &graphicsSupported)
+    if (device.getSurfaceSupportKHR(indices.graphicsFamily.value(), surface, &graphicsSupported)
         != vk::Result::eSuccess) {
         return false;
     }
@@ -1218,14 +1238,26 @@ bool VulkanSDL2App::isDeviceSuitable(vk::PhysicalDevice device) {
 VulkanSDL2App::QueueFamilyIndices VulkanSDL2App::findQueueFamilies(vk::PhysicalDevice device) {
     QueueFamilyIndices indices;
     auto queueFamiliesProperties = device.getQueueFamilyProperties();
-    for (uint32_t i = 0; i < queueFamiliesProperties.size(); i++) {
-        if (queueFamiliesProperties[i].queueFlags & vk::QueueFlagBits::eGraphics
-            && queueFamiliesProperties[i].queueFlags & vk::QueueFlagBits::eCompute) {
-            indices.graphicsAndComputeFamily = i;
+    for (uint32_t i = 0; i < 3 * queueFamiliesProperties.size(); i++) {
+        uint32_t idx = i % queueFamiliesProperties.size();
+        if (queueFamiliesProperties[idx].queueFlags & vk::QueueFlagBits::eGraphics) {
+            if (!indices.graphicsFamily.has_value()) {
+                indices.graphicsFamily = idx;
+                continue;
+            }
         }
 
-        if (device.getSurfaceSupportKHR(i, surface)) {
-            indices.presentFamily = i;
+        if (queueFamiliesProperties[idx].queueFlags & vk::QueueFlagBits::eTransfer) {
+            if (!indices.transferFamily.has_value()) {
+                indices.transferFamily = idx;
+                continue;
+            }
+        }
+
+        if (device.getSurfaceSupportKHR(idx, surface)) {
+            if (!indices.presentFamily.has_value()) {
+                indices.presentFamily = idx;
+            }
         }
 
         if (indices.isComplete()) {
@@ -1311,7 +1343,7 @@ void VulkanSDL2App::createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage
 void VulkanSDL2App::copyBuffer(vk::Buffer srcBuffer, vk::Buffer dstBuffer, vk::DeviceSize size) {
     auto commandBuffers = device.allocateCommandBuffers(
         vk::CommandBufferAllocateInfo(
-            commandPool,
+            commandPoolTransfer,
             vk::CommandBufferLevel::ePrimary,
             1
         )
@@ -1326,13 +1358,13 @@ void VulkanSDL2App::copyBuffer(vk::Buffer srcBuffer, vk::Buffer dstBuffer, vk::D
 
     commandBuffers[0].end();
 
-    computeQueue.submit(
+    transferQueue.submit(
         vk::SubmitInfo(0, nullptr, nullptr, 1, commandBuffers.data(), 0, nullptr)
     );
 
-    computeQueue.waitIdle();
+    transferQueue.waitIdle();
 
-    device.freeCommandBuffers(commandPool, commandBuffers);
+    device.freeCommandBuffers(commandPoolTransfer, commandBuffers);
 }
 
 void VulkanSDL2App::createImage(uint32_t width, uint32_t height, uint32_t mipLevels, vk::SampleCountFlagBits numSamples,
@@ -1361,7 +1393,12 @@ void VulkanSDL2App::createImage(uint32_t width, uint32_t height, uint32_t mipLev
 
 void VulkanSDL2App::transitionImageLayout(vk::Image image, vk::Format format, vk::ImageLayout oldLayout,
     vk::ImageLayout newLayout, uint32_t mipLevels) {
-    vk::CommandBuffer commandBuffer = beginSingleTimeCommands();
+    auto commandBuffers = device.allocateCommandBuffers(
+        vk::CommandBufferAllocateInfo(commandPool, vk::CommandBufferLevel::ePrimary, 1)
+    );
+
+    commandBuffers[0].begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    vk::CommandBuffer commandBuffer = commandBuffers[0];
 
     vk::ImageMemoryBarrier barrier{};
     barrier.oldLayout = oldLayout;
@@ -1400,7 +1437,18 @@ void VulkanSDL2App::transitionImageLayout(vk::Image image, vk::Format format, vk
         1, &barrier
     );
 
-    endSingleTimeCommands(commandBuffer);
+    commandBuffer.end();
+    vk::SubmitInfo submitInfo{};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    auto res = graphicsQueue.submit(1, &submitInfo, nullptr);
+    if (res != vk::Result::eSuccess) {
+        std::printf("endSingleTimeCommands error\n");
+    }
+    graphicsQueue.waitIdle();
+
+    device.freeCommandBuffers(commandPool, commandBuffer);
 }
 
 void VulkanSDL2App::copyBufferToImage(vk::Buffer buffer, vk::Image image, uint32_t width, uint32_t height) {
@@ -1424,7 +1472,7 @@ void VulkanSDL2App::copyBufferToImage(vk::Buffer buffer, vk::Image image, uint32
 
 vk::CommandBuffer VulkanSDL2App::beginSingleTimeCommands() {
     auto commandBuffers = device.allocateCommandBuffers(
-        vk::CommandBufferAllocateInfo(commandPool, vk::CommandBufferLevel::ePrimary, 1)
+        vk::CommandBufferAllocateInfo(commandPoolTransfer, vk::CommandBufferLevel::ePrimary, 1)
     );
 
     commandBuffers[0].begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
@@ -1438,13 +1486,13 @@ void VulkanSDL2App::endSingleTimeCommands(vk::CommandBuffer commandBuffer) {
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    auto res = graphicsQueue.submit(1, &submitInfo, nullptr);
+    auto res = transferQueue.submit(1, &submitInfo, nullptr);
     if (res != vk::Result::eSuccess) {
         std::printf("endSingleTimeCommands error\n");
     }
-    graphicsQueue.waitIdle();
+    transferQueue.waitIdle();
 
-    device.freeCommandBuffers(commandPool, commandBuffer);
+    device.freeCommandBuffers(commandPoolTransfer, commandBuffer);
 }
 
 uint32_t VulkanSDL2App::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
