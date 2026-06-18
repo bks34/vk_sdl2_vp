@@ -242,6 +242,14 @@ void VulkanSDL2App::draw() {
             auto t2 = std::chrono::high_resolution_clock::now();
             long long sleepTime = static_cast<long long>(dt * 1000000) -  std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
             std::this_thread::sleep_for(std::chrono::microseconds(sleepTime < 0 ? 0 : sleepTime));
+
+            double pt = ffmpegDecoder->getRelativeTime();
+            std::printf("\rplayback time:    %02lld:%02lld:%02lld   ",
+                static_cast<long long>(pt) / 3600,
+                (static_cast<long long>(pt) - static_cast<long long>(pt) / 3600) / 60,
+                static_cast<long long>(pt - static_cast<double>(static_cast<long long>(pt) - static_cast<long long>(pt) % 60))
+            );
+            fflush(stdout);
         }
     }
 
@@ -1067,9 +1075,9 @@ void VulkanSDL2App::updateTexture(uint32_t imageIndex, std::shared_ptr<FFmpegDec
             vk::SamplerCreateInfo(
                 {}, vk::Filter::eLinear, vk::Filter::eLinear,
                 vk::SamplerMipmapMode::eLinear,
-                vk::SamplerAddressMode::eRepeat,
-                vk::SamplerAddressMode::eRepeat,
-                vk::SamplerAddressMode::eRepeat,
+                vk::SamplerAddressMode::eClampToEdge,
+                vk::SamplerAddressMode::eClampToEdge,
+                vk::SamplerAddressMode::eClampToEdge,
                 0.0f, vk::False, 0,
                 vk::False, vk::CompareOp::eAlways,
                 0.0f, 0.0f,
@@ -1136,12 +1144,12 @@ void VulkanSDL2App::recordCommandBuffer(vk::CommandBuffer commandBuffer, uint32_
 
     if (aspectRatioMedia > aspectRatioWindow) {
         viewportWidth = extentWidth;
-        viewportHeight = extentWidth / aspectRatioMedia;
+        viewportHeight = extentWidth * mediaHeight / mediaWidth;
         viewX = 0.0f;
         viewY = static_cast<float>(extentHeight - viewportHeight) / 2.0f;
     } else {
         viewportHeight = extentHeight;
-        viewportWidth = extentHeight * aspectRatioMedia;
+        viewportWidth = extentHeight * mediaWidth / mediaHeight;
         viewX = static_cast<float>(extentWidth - viewportWidth) / 2.0f;
         viewY = 0.0f;
     }
@@ -1153,8 +1161,10 @@ void VulkanSDL2App::recordCommandBuffer(vk::CommandBuffer commandBuffer, uint32_
     commandBuffer.setViewport(0, 1, &viewport);
 
     vk::Rect2D scissor = {
-        vk::Offset2D(0, 0),
-        swapChainExtent
+        // vk::Offset2D(static_cast<uint32_t>(viewX) + 1, static_cast<uint32_t>(viewY) + 1),
+        // vk::Extent2D(viewportWidth - 2, viewportHeight - 2),
+        vk::Offset2D(viewX, viewY),
+        vk::Extent2D(viewportWidth, viewportHeight),
     };
     commandBuffer.setScissor(0, 1, &scissor);
 

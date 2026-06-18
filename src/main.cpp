@@ -24,7 +24,7 @@ int main(int argc, char* argv[]) {
         config.autoReplay = true;
     }
 
-    VulkanSDL2App app(std::string(argv[1]), 1920, 1080, config);
+    VulkanSDL2App app(std::string(argv[1]), 800, 600, config);
 
     app.run();
     return 0;
