@@ -53,6 +53,8 @@ public:
         int64_t audioPts = 0;
     };
 
+    bool videoFrameReady();
+
     std::shared_ptr<Frame> getVideoFrame();
 
     std::shared_ptr<Frame> getAudioFrame();
@@ -113,6 +115,9 @@ private:
         double videoTime = 0.0;
     };
     Clock clock;
+
+    AVRational audioTimeBase;
+    AVRational videoTimeBase;
 
     // seek
     std::atomic<bool> seekReq = false;

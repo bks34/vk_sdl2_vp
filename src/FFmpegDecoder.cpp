@@ -70,6 +70,8 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
             fps = 30;
         }
 
+        videoTimeBase = pFormatCtx->streams[videoIndex]->time_base;
+
         // Video Codec Context
         width = pFormatCtx->streams[videoIndex]->codecpar->width;
 		height = pFormatCtx->streams[videoIndex]->codecpar->height;
@@ -110,6 +112,8 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
 
     if (hasAudio) {
         audioClock.sample_rate = audio_spec.freq;
+        audioTimeBase = pFormatCtx->streams[audioIndex]->time_base;
+
         // Audio Codec Context
         audioDecoder.pAVCtx = avcodec_alloc_context3(nullptr);
         avcodec_parameters_to_context(audioDecoder.pAVCtx, pFormatCtx->streams[audioIndex]->codecpar);
@@ -166,14 +170,14 @@ bool FFmpegDecoder::isStopped() {
     return stopped;
 }
 
+bool FFmpegDecoder::videoFrameReady() {
+    return videoDecoder.frameQueue.size() > 0;
+}
+
 std::shared_ptr<FFmpegDecoder::Frame> FFmpegDecoder::getVideoFrame() {
     std::shared_ptr<FFmpegDecoder::Frame> frame;
 
-    if (videoDecoder.frameQueue.size() > 1) {
-        videoDecoder.frameQueue.pop(frame);
-    } else {
-        videoDecoder.frameQueue.front(frame);
-    }
+    videoDecoder.frameQueue.pop(frame);
 
     return  frame;
 }
@@ -242,7 +246,7 @@ void FFmpegDecoder::updateAudioClock(int lens, int64_t newFrame) {
     if (newFrame) {
         audioClock.pts = newFrame;
     } else {
-        static double temp = (audioDst.channelLayout.nb_channels *av_get_bytes_per_sample(audioDst.sampleFormat)) * audioDst.freq * av_q2d(pFormatCtx->streams[audioIndex]->time_base);
+        static double temp = (audioDst.channelLayout.nb_channels *av_get_bytes_per_sample(audioDst.sampleFormat)) * audioDst.freq * av_q2d(audioTimeBase);
         audioClock.pts += (double) lens / temp;
     }
 }
@@ -252,7 +256,7 @@ int64_t FFmpegDecoder::getAudioTimePts() {
 }
 
 double FFmpegDecoder::getDelay(int64_t videoPts) {
-    return videoPts * av_q2d(pFormatCtx->streams[videoIndex]->time_base) - audioClock.pts * av_q2d(pFormatCtx->streams[audioIndex]->time_base);
+    return videoPts * av_q2d(videoTimeBase) - audioClock.pts * av_q2d(audioTimeBase);
 }
 
 
@@ -369,15 +373,15 @@ void FFmpegDecoder::readPacket() {
 
     while (!videoDecoder.threadStopped || !audioDecoder.threadStopped) {}
 
-    avformat_close_input(&pFormatCtx);
-
     audioDecoder.packetQueue.clear();
     videoDecoder.packetQueue.clear();
 
-    videoDecoder.frameQueue.clear();
-    audioDecoder.frameQueue.clear();
+    // videoDecoder.frameQueue.clear();
+    // audioDecoder.frameQueue.clear();
 
     stopped = true;
+
+    avformat_close_input(&pFormatCtx);
     std::printf("FFmpegDecoder exiting...\n");
 }
 
