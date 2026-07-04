@@ -200,6 +200,8 @@ void VulkanSDL2App::draw() {
         while (drawThreadRunning) {
             while (!ffmpegDecoder->videoFrameReady()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                double pt = ffmpegDecoder->getRelativeTime();
+                printPlaybackTime(pt);
                 if (ffmpegDecoder->isStopped()) {
                     break;
                 }
@@ -224,35 +226,33 @@ void VulkanSDL2App::draw() {
             drawTime = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
 
             double pt = ffmpegDecoder->getRelativeTime();
-            std::printf("\rplayback time:    %02lld:%02lld:%02lld   ",
-                static_cast<long long>(pt) / 3600,
-                (static_cast<long long>(pt) - static_cast<long long>(pt) / 3600) / 60,
-                static_cast<long long>(pt - static_cast<double>(static_cast<long long>(pt) - static_cast<long long>(pt) % 60))
-            );
-            fflush(stdout);
+            printPlaybackTime(pt);
         }
     } else {
         while (drawThreadRunning) {
+            while (!ffmpegDecoder->videoFrameReady()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                double pt = ffmpegDecoder->getRelativeTime();
+                printPlaybackTime(pt);
+                if (ffmpegDecoder->isStopped()) {
+                    break;
+                }
+            }
             if (ffmpegDecoder->isStopped()) {
                 break;
             }
-            auto t1 = std::chrono::high_resolution_clock::now();
+
             auto frame = ffmpegDecoder->getVideoFrame();
-            if (!frame->data) {
-                continue;
-            }
+
+
+            auto t1 = std::chrono::high_resolution_clock::now();
             DrawFrame(frame);
             auto t2 = std::chrono::high_resolution_clock::now();
             long long sleepTime = static_cast<long long>(dt * 1000000) -  std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
             std::this_thread::sleep_for(std::chrono::microseconds(sleepTime < 0 ? 0 : sleepTime));
 
             double pt = ffmpegDecoder->getRelativeTime();
-            std::printf("\rplayback time:    %02lld:%02lld:%02lld   ",
-                static_cast<long long>(pt) / 3600,
-                (static_cast<long long>(pt) - static_cast<long long>(pt) / 3600) / 60,
-                static_cast<long long>(pt - static_cast<double>(static_cast<long long>(pt) - static_cast<long long>(pt) % 60))
-            );
-            fflush(stdout);
+            printPlaybackTime(pt);
         }
     }
 
@@ -348,6 +348,15 @@ void VulkanSDL2App::printAppInfos() {
         "right mouse click  seek to percentage in file corresponding to fraction of width\n"
         "left double-click  toggle full screen\n\n"
         );
+}
+
+void VulkanSDL2App::printPlaybackTime(double t) {
+    std::printf("\rplayback time:    %02lld:%02lld:%02lld   ",
+                static_cast<long long>(t) / 3600,
+                (static_cast<long long>(t) - static_cast<long long>(t) / 3600) / 60,
+                static_cast<long long>(t - static_cast<double>(static_cast<long long>(t) - static_cast<long long>(t) % 60))
+            );
+    fflush(stdout);
 }
 
 void VulkanSDL2App::toggleFullscreen() {

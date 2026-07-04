@@ -23,6 +23,8 @@ static std::map<SDL_AudioFormat, AVSampleFormat> AUDIO_FORMAT_MAP = {
 FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& audio_spec, bool replay) {
     this->filename = filename;
     this->replay = replay;
+    this->width = 600;
+    this->height = 600;
     videoDecoder.setMaxFrameSize(5);
     audioDecoder.setMaxFrameSize(10);
 
@@ -102,8 +104,6 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
             throw std::runtime_error("Couldn't open video decoder");
         }
 
-        //width = videoDecoder.pAVCtx->width;
-        //height = videoDecoder.pAVCtx->height;
         pSwsCtx = sws_getContext(width, height, videoDecoder.pAVCtx->pix_fmt,
             width, height, AV_PIX_FMT_RGBA,
             SWS_BICUBIC, nullptr, nullptr, nullptr);
@@ -177,8 +177,11 @@ bool FFmpegDecoder::videoFrameReady() {
 std::shared_ptr<FFmpegDecoder::Frame> FFmpegDecoder::getVideoFrame() {
     std::shared_ptr<FFmpegDecoder::Frame> frame;
 
-    videoDecoder.frameQueue.pop(frame);
-
+    if (videoIsCover) {
+        videoDecoder.frameQueue.front(frame);
+    } else {
+        videoDecoder.frameQueue.pop(frame);
+    }
     return  frame;
 }
 

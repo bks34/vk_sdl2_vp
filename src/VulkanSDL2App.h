@@ -175,6 +175,8 @@ private:
 
     void printAppInfos();
 
+    void printPlaybackTime(double t);
+
     void toggleFullscreen();
     void togglePause();
     void updateVolume(int sign);
