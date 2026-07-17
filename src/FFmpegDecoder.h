@@ -63,6 +63,10 @@ public:
 
     bool hasAudio();
 
+    std::string getVideoCodecName() const;
+
+    std::string getAudioCodecName() const;
+
     double getFps();
 
     double getDeltaTime();
@@ -147,6 +151,7 @@ private:
         std::thread decodeThread;
         std::atomic<bool> threadRunning = false;
         std::atomic<bool> threadStopped = false;
+        std::string codecName;
     };
 
     DecoderInfo videoDecoder;

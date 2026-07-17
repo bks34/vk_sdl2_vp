@@ -96,6 +96,7 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
             avformat_close_input(&pFormatCtx);
             throw std::runtime_error("Couldn't find video decoder");
         }
+        videoDecoder.codecName = std::string(pVideoCodec->name);
 
         // open video codec
         if (avcodec_open2(videoDecoder.pAVCtx, pVideoCodec, nullptr) < 0) {
@@ -125,6 +126,8 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
             avformat_close_input(&pFormatCtx);
             throw std::runtime_error("Couldn't find audio decoder");
         }
+
+        audioDecoder.codecName = std::string(pAudioCodec->name);
 
         // open audio codec
         if (avcodec_open2(audioDecoder.pAVCtx, pAudioCodec, nullptr) < 0) {
@@ -199,6 +202,14 @@ bool FFmpegDecoder::isVideo() {
 
 bool FFmpegDecoder::hasAudio() {
     return audioIndex >= 0;
+}
+
+std::string FFmpegDecoder::getVideoCodecName() const {
+    return videoDecoder.codecName;
+}
+
+std::string FFmpegDecoder::getAudioCodecName() const {
+    return audioDecoder.codecName;
 }
 
 double FFmpegDecoder::getFps() {

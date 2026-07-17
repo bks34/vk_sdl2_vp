@@ -321,14 +321,23 @@ void VulkanSDL2App::initWindow() {
 void VulkanSDL2App::printAppInfos() {
     double duration = ffmpegDecoder->getDuration();
     bool isVideo = ffmpegDecoder->isVideo();
+    bool hasAudio = ffmpegDecoder->hasAudio();
     double fps = ffmpegDecoder->getFps();
     auto resolution = ffmpegDecoder->getVideoSize();
+    auto videoCodecName = ffmpegDecoder->getVideoCodecName();
+    auto audioCodecName = ffmpegDecoder->getAudioCodecName();
+
     std::printf("media path:        %s\n", title.c_str());
     if (isVideo) {
         std::printf("resolution:        %d x %d \n", resolution[0], resolution[1]);
         std::printf("fps:               %lf\n", fps);
+        std::printf("video decoder:     %s\n", videoCodecName.c_str());
+        if (hasAudio) {
+            std::printf("audio decoder:     %s\n", audioCodecName.c_str());
+        }
     } else {
         std::printf("cover size:        %d x %d \n", resolution[0], resolution[1]);
+        std::printf("audio decoder:     %s\n", audioCodecName.c_str());
     }
     std::printf("media duration:    %02lld:%02lld:%02lld\n",
         static_cast<long long>(duration) / 3600,
