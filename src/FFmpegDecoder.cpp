@@ -197,7 +197,7 @@ std::shared_ptr<FFmpegDecoder::Frame> FFmpegDecoder::getAudioFrame() {
 }
 
 bool FFmpegDecoder::isVideo() {
-    return !videoIsCover;
+    return videoIndex >= 0 && !videoIsCover;
 }
 
 bool FFmpegDecoder::hasAudio() {
@@ -447,7 +447,7 @@ void FFmpegDecoder::videoDecode() {
             pAVframeRGB->width = width;
             pAVframeRGB->height = height;
             pAVframeRGB->format = AV_PIX_FMT_RGBA;
-            if (!av_image_alloc(pAVframeRGB->data, pAVframeRGB->linesize, width, height, AV_PIX_FMT_RGB32, 1)) {
+            if (!av_image_alloc(pAVframeRGB->data, pAVframeRGB->linesize, width, height, AV_PIX_FMT_RGBA, 1)) {
                 throw std::runtime_error("Couldn't allocate pixel buffer for pAVframeRGB");
             }
 
