@@ -27,7 +27,7 @@ int main(int argc, char* argv[]) {
 
     VulkanSDL2App app(std::string(argv[1]), 800, 600, config);
 #else
-    VulkanSDL2App app(std::string("/home/heshaoquan/Videos/bilibili/cyberpunk.mp4"), 600, 600, Config(true, true));
+    VulkanSDL2App app(std::string("test.mp4"), 600, 600, Config(true, true));
 #endif
 
     app.run();
