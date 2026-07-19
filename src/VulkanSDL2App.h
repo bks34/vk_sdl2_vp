@@ -131,8 +131,11 @@ private:
     vk::Buffer vertexBuffer;
     vk::DeviceMemory vertexBufferMemory;
 
-    vk::Buffer updateTextureStagingBuffer;
-    vk::DeviceMemory updateTextureStagingBufferMemory;
+    std::vector<vk::Buffer> stagingBuffers;
+    std::vector<vk::DeviceMemory> stagingBufferMemories;
+
+    std::vector<vk::CommandBuffer> transferCommandBuffers;
+    std::vector<vk::Semaphore> transferCompleteSemaphores;
 
     struct Texture {
         explicit Texture(const vk::Device device) : device(device) {}
@@ -201,7 +204,8 @@ private:
     void createDescriptorPool();
     void createDescriptorSets();
     void initTextureResource();
-    void createUpdateTextureStagingBuffer();
+    void createStagingBuffers();
+    void createTransferSyncObjects();
     void createSyncObjects();
 
     void DrawFrame(std::shared_ptr<FFmpegDecoder::Frame> frame);
@@ -209,7 +213,7 @@ private:
     void cleanupSwapChain();
     void reCreateSwapChain();
 
-    void updateTexture(uint32_t imageIndex, std::shared_ptr<FFmpegDecoder::Frame> frame);
+    void updateTexture(uint32_t currentFrame, uint32_t imageIndex, std::shared_ptr<FFmpegDecoder::Frame> frame);
     void recordCommandBuffer(vk::CommandBuffer commandBuffer, uint32_t imageIndex);
 
     // helper functions
@@ -233,15 +237,6 @@ private:
     void createImage(uint32_t width, uint32_t height, uint32_t mipLevels, vk::SampleCountFlagBits numSamples,
                      vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage,
                      vk::MemoryPropertyFlags properties, vk::Image &image, vk::DeviceMemory &imageMemory);
-
-    void transitionImageLayout(vk::Image image, vk::Format format, vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
-                               uint32_t mipLevels);
-
-    void copyBufferToImage(vk::Buffer buffer, vk::Image image, uint32_t width, uint32_t height);
-
-    vk::CommandBuffer beginSingleTimeCommands();
-
-    void endSingleTimeCommands(vk::CommandBuffer commandBuffer);
 
     uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
 };

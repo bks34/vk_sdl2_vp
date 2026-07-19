@@ -79,14 +79,9 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
 		height = pFormatCtx->streams[videoIndex]->codecpar->height;
 
         videoDecoder.pAVCtx = avcodec_alloc_context3(nullptr);
-        videoDecoder.pAVCtx->thread_count = 1;
-        if (width >= 1920 || height >= 1080) {
-			videoDecoder.pAVCtx->thread_count = 2;
-        }
-		if (width >= 3840 || height >= 2160) {
-			videoDecoder.pAVCtx->thread_count = SDL_GetCPUCount() > 4 ? 4 : SDL_GetCPUCount();
-		}
-        videoDecoder.pAVCtx->thread_type = FF_THREAD_FRAME;
+
+        videoDecoder.pAVCtx->thread_count = 0;
+        videoDecoder.pAVCtx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
         avcodec_parameters_to_context(videoDecoder.pAVCtx, pFormatCtx->streams[videoIndex]->codecpar);
 
         // Video Codec
@@ -344,7 +339,7 @@ void FFmpegDecoder::readPacket() {
         if (av_read_frame(pFormatCtx, pAVpkt) < 0) {
             if (replay) {
                 while (videoDecoder.frameQueue.size() > 1) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    std::this_thread::sleep_for(std::chrono::microseconds(1));
                 }
                 double curTime = 0.0;
                 if (audioIndex >= 0) {
@@ -365,7 +360,7 @@ void FFmpegDecoder::readPacket() {
         packet->data = pAVpkt;
         if (pAVpkt->stream_index == videoIndex) {
             while (videoDecoder.packetQueue.full()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(std::chrono::microseconds(1));
                 if (!running) {
                     break;
                 }
@@ -373,7 +368,7 @@ void FFmpegDecoder::readPacket() {
             videoDecoder.packetQueue.push(packet);
         } else if (pAVpkt->stream_index == audioIndex) {
             while (audioDecoder.packetQueue.full()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(std::chrono::microseconds(1));
                 if (!running) {
                     break;
                 }
@@ -405,7 +400,7 @@ void FFmpegDecoder::videoDecode() {
         while (paused) {}
         std::shared_ptr<Packet> pPacket;
         while (!videoDecoder.packetQueue.size()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::sleep_for(std::chrono::microseconds(1));
             if (!videoDecoder.threadRunning) {
                 break;
             }
@@ -417,16 +412,24 @@ void FFmpegDecoder::videoDecode() {
 
         mutexVideoCodec.lock();
         int ret = avcodec_send_packet(videoDecoder.pAVCtx, pPacket->data);
-        int gotFrame = avcodec_receive_frame(videoDecoder.pAVCtx, pAVframe);
         mutexVideoCodec.unlock();
-
-
         if (ret < 0) {
             std::cout << "error during avcodec_send_packet" << std::endl;
-            continue;
+            break;
         }
 
-        if (gotFrame == 0) {
+        while (videoDecoder.threadRunning) {
+            mutexVideoCodec.lock();
+            ret = avcodec_receive_frame(videoDecoder.pAVCtx, pAVframe);
+            mutexVideoCodec.unlock();
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                break;
+            }
+            if (ret < 0) {
+                std::cout << "error during avcodec_receive_frame" << std::endl;
+                break;
+            }
+
             // get time
             if (pAVframe->pts == AV_NOPTS_VALUE) {
                 if (pPacket->data->pts == AV_NOPTS_VALUE) {
@@ -443,7 +446,7 @@ void FFmpegDecoder::videoDecode() {
                 clock.videoTime = (double) pAVframe->pts * av_q2d(pFormatCtx->streams[videoIndex]->time_base);
             }
 
-            AVFrame* pAVframeRGB = av_frame_alloc();
+            AVFrame *pAVframeRGB = av_frame_alloc();
             pAVframeRGB->width = width;
             pAVframeRGB->height = height;
             pAVframeRGB->format = AV_PIX_FMT_RGBA;
@@ -452,16 +455,16 @@ void FFmpegDecoder::videoDecode() {
             }
 
             if (!sws_scale(pSwsCtx, pAVframe->data, pAVframe->linesize, 0,
-                height, pAVframeRGB->data, pAVframeRGB->linesize)) {
+                           height, pAVframeRGB->data, pAVframeRGB->linesize)) {
                 throw std::runtime_error("Convert to RGB32 error!");
-                }
+            }
             std::shared_ptr<Frame> frame = std::make_shared<Frame>();
             frame->data = pAVframeRGB;
             frame->videoPts = clock.videoPts;
 
             // push to queue
             while (videoDecoder.frameQueue.full()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(std::chrono::microseconds(1));
                 if (!videoDecoder.threadRunning) {
                     break;
                 }
@@ -497,7 +500,7 @@ void FFmpegDecoder::audioDecode() {
         while (paused) {}
         std::shared_ptr<Packet> pPacket;
         while (!audioDecoder.packetQueue.size()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::sleep_for(std::chrono::microseconds(1));
             if (!audioDecoder.threadRunning) {
                 break;
             }
@@ -554,7 +557,7 @@ void FFmpegDecoder::audioDecode() {
 
             // push to queue
             while (audioDecoder.frameQueue.full()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(std::chrono::microseconds(1));
                 if (!audioDecoder.threadRunning) {
                     break;
                 }

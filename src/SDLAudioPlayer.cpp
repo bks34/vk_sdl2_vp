@@ -86,7 +86,6 @@ void SDLAudioPlayer::fillAudio(Uint8 *stream, int len) {
             }
             while (!ffmpegDecoder->audioFrameReady()) {
                 if (ffmpegDecoder->isStopped()) {
-                    stop();
                     return;
                 }
             }

@@ -3,6 +3,7 @@
 #include <set>
 
 int main(int argc, char* argv[]) {
+#ifdef NDEBUG
     if (argc < 2) {
         std::cout << "Usage: " << argv[0] << " <file> " << " <Options>... "<< std::endl;
         std::cout << "Options:" << std::endl;
@@ -25,6 +26,9 @@ int main(int argc, char* argv[]) {
     }
 
     VulkanSDL2App app(std::string(argv[1]), 800, 600, config);
+#else
+    VulkanSDL2App app(std::string("/home/heshaoquan/Videos/bilibili/cyberpunk.mp4"), 600, 600, Config(true, true));
+#endif
 
     app.run();
     return 0;
