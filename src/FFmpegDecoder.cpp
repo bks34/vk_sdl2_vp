@@ -446,6 +446,10 @@ void FFmpegDecoder::videoDecode() {
                 clock.videoTime = (double) pAVframe->pts * av_q2d(pFormatCtx->streams[videoIndex]->time_base);
             }
 
+            if (getDelay(clock.videoPts) < -0.1) {
+                continue;
+            }
+
             AVFrame *pAVframeRGB = av_frame_alloc();
             pAVframeRGB->width = width;
             pAVframeRGB->height = height;

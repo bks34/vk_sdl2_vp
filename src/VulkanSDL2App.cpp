@@ -217,7 +217,7 @@ void VulkanSDL2App::draw() {
                     sleepTime = static_cast<long long>(dt * 1000000);
                 }
                 std::this_thread::sleep_for(std::chrono::microseconds(sleepTime));
-            } else if (sleepTime < -1000000) {
+            } else if (sleepTime < -200000) {
                 continue;
             }
             auto t1 = std::chrono::high_resolution_clock::now();
