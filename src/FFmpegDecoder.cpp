@@ -349,15 +349,13 @@ bool FFmpegDecoder::tryInitHwDecoder() {
     struct HwBackend {
         const char* name;
         AVHWDeviceType type;
-        AVPixelFormat hwFmt, swFmt;
-        const char* codecSfx;    // e.g. "vaapi", "nvdec"
-        const char* deviceOpt;   // e.g. "0" for CUDA GPU index
+        AVPixelFormat hwFmt;
+        const char* codecSfx;
+        const char* deviceOpt;
     };
     const HwBackend backends[] = {
-        { "VAAPI", AV_HWDEVICE_TYPE_VAAPI, AV_PIX_FMT_VAAPI, AV_PIX_FMT_NV12,
-          "vaapi", nullptr },
-        { "CUDA",  AV_HWDEVICE_TYPE_CUDA,  AV_PIX_FMT_CUDA,  AV_PIX_FMT_NV12,
-          "nvdec", "0"  },
+        { "VAAPI", AV_HWDEVICE_TYPE_VAAPI, AV_PIX_FMT_VAAPI, "vaapi", nullptr },
+        { "CUDA",  AV_HWDEVICE_TYPE_CUDA,  AV_PIX_FMT_CUDA,  "nvdec", "0"     },
     };
 
     for (const auto& b : backends) {
@@ -454,7 +452,7 @@ bool FFmpegDecoder::tryInitHwDecoder() {
             std::printf("Using hardware acceleration: %s (+%s, %s→%s)\n",
                         videoDecoder.codecName.c_str(), b.name,
                         av_get_pix_fmt_name(hw_pix_fmt_),
-                        av_get_pix_fmt_name(b.swFmt));
+                        av_get_pix_fmt_name(AV_PIX_FMT_NV12));
             return true;
         }
 
