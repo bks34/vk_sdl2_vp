@@ -3,21 +3,27 @@
 #include <set>
 
 int main(int argc, char* argv[]) {
-#ifdef NDEBUG
     if (argc < 2) {
         std::cout << "Usage: " << argv[0] << " <file> " << " <Options>... "<< std::endl;
         std::cout << "Options:" << std::endl;
-        std::cout << "-d for discrete gpu first(default integrated first)." << std::endl;
-        std::cout << "-r for replay(default not)." << std::endl;
+        std::cout << "  -d       prefer discrete GPU (default: integrated first)." << std::endl;
+        std::cout << "  -r       auto replay when playback finishes." << std::endl;
+        std::cout << "  -hw <backend>  hardware acceleration backend." << std::endl;
+        std::cout << "           none (default) / auto / vaapi / cuda" << std::endl;
         return -1;
     }
 
+    Config config;
     std::set<std::string> options;
     for (int i = 2; i < argc; ++i) {
-        options.insert(std::string(argv[i]));
+        std::string arg(argv[i]);
+        if (arg == "-hw" && i + 1 < argc) {
+            config.hwAccel = std::string(argv[++i]);
+        } else {
+            options.insert(arg);
+        }
     }
 
-    Config config;
     if (options.count("-d")) {
         config.DiscreteGpuFirst = true;
     }
@@ -26,9 +32,6 @@ int main(int argc, char* argv[]) {
     }
 
     VulkanSDL2App app(std::string(argv[1]), 800, 600, config);
-#else
-    VulkanSDL2App app(std::string("test.mp4"), 600, 600, Config(true, true));
-#endif
 
     app.run();
     return 0;

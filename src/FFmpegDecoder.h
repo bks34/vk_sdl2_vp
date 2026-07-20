@@ -13,6 +13,8 @@ extern "C"
 #include <libavutil/avutil.h>
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/pixdesc.h>
 #include <libswresample/swresample.h>
 }
 #include <thread>
@@ -24,7 +26,8 @@ extern "C"
 
 class FFmpegDecoder {
 public:
-    explicit FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& audio_spec, bool replay);
+    explicit FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& audio_spec,
+                            bool replay, const std::string& hwAccel = "auto");
 
     void run();
 
@@ -35,17 +38,7 @@ public:
     bool isStopped();
 
     struct Frame {
-        ~Frame() {
-            this->free();
-        }
-
-        void free() {
-            if (data) {
-                av_freep(&data->data[0]);
-                av_frame_free(&data);
-            }
-        }
-
+        ~Frame() { if (data) av_frame_free(&data); }
         AVFrame* data = nullptr;
         uint8_t* audioData = nullptr;
         int audioBufferSize = 0;
@@ -67,6 +60,11 @@ public:
 
     std::string getAudioCodecName() const;
 
+    // 0 = BT.601, 1 = BT.709, 2 = BT.2020  (matches shader push constant)
+    int getColorStandard() const;
+    // 0 = Limited (TV), 1 = Full (PC)       (matches shader push constant)
+    int getColorRange() const;
+
     double getFps();
 
     double getDeltaTime();
@@ -76,6 +74,9 @@ public:
     double getDuration();
 
     void seekTime(double time);
+
+    // get_format callback (FFmpeg official example pattern)
+    static AVPixelFormat getHwFormat(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);
 
     std::array<int, 2> getVideoSize();
 
@@ -167,14 +168,25 @@ private:
     AudioParams audioSrc{}, audioDst{};
 
     // data about video stream
-    SwsContext* pSwsCtx = nullptr;
+    SwsContext* pSwsCtx = nullptr;     // software path
+    SwsContext* hwSwsCtx = nullptr;    // hardware GPU→NV12 conversion
+    int hwSwsSrcFmt = -1;
     int fps_den, fps_num;
     int width, height;
 
 
+    bool tryInitHwDecoder();
+
     void readPacket();
     void videoDecode();
     void audioDecode();
+
+    // hardware decoding support
+    std::string hwAccelPref;
+    AVPixelFormat hw_pix_fmt_ = AV_PIX_FMT_NONE;
+    AVBufferRef* hw_device_ctx = nullptr;
+    AVBufferRef* hw_frames_ref = nullptr;
+    bool useHwDecode = false;
 };
 
 

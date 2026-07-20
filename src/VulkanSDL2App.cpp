@@ -272,7 +272,9 @@ void VulkanSDL2App::initWindow() {
 
     audioPlayer = new SDLAudioPlayer();
     auto spec = audioPlayer->getAudioSpec();
-    ffmpegDecoder = new FFmpegDecoder(this->title, spec, config.autoReplay);
+    ffmpegDecoder = new FFmpegDecoder(this->title, spec, config.autoReplay, config.hwAccel);
+    colorStandard = ffmpegDecoder->getColorStandard();
+    colorRange    = ffmpegDecoder->getColorRange();
     audioPlayer->setFFmpegDecoder(ffmpegDecoder);
 
     if (SDL_GetNumVideoDisplays() < 0) {
@@ -400,14 +402,18 @@ void VulkanSDL2App::destroyVulkan() {
 
     device.destroyRenderPass(renderPass);
 
-    textures = std::vector<Texture>();
+    textures = std::vector<NV12Texture>();
 
     device.destroyBuffer(vertexBuffer);
     device.freeMemory(vertexBufferMemory);
 
-    for (size_t i = 0; i < stagingBuffers.size(); ++i) {
-        device.destroyBuffer(stagingBuffers[i]);
-        device.freeMemory(stagingBufferMemories[i]);
+    for (size_t i = 0; i < stagingBuffersY.size(); ++i) {
+        device.destroyBuffer(stagingBuffersY[i]);
+        device.freeMemory(stagingBufferMemoriesY[i]);
+    }
+    for (size_t i = 0; i < stagingBuffersUV.size(); ++i) {
+        device.destroyBuffer(stagingBuffersUV[i]);
+        device.freeMemory(stagingBufferMemoriesUV[i]);
     }
 
     for (size_t i = 0; i < transferCompleteSemaphores.size(); ++i) {
@@ -728,15 +734,11 @@ void VulkanSDL2App::createFrameBuffers() {
 }
 
 void VulkanSDL2App::createGraphicsDescriptorSetLayout() {
-    vk::DescriptorSetLayoutBinding samplerLayoutBinding;
-    samplerLayoutBinding.binding = 0;
-    samplerLayoutBinding.descriptorCount = 1;
-    samplerLayoutBinding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    samplerLayoutBinding.pImmutableSamplers = nullptr;
-    samplerLayoutBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
-
-    std::array<vk::DescriptorSetLayoutBinding, 1> bindings = {
-        samplerLayoutBinding
+    std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {
+        vk::DescriptorSetLayoutBinding{0, vk::DescriptorType::eCombinedImageSampler,
+            1, vk::ShaderStageFlagBits::eFragment, nullptr},
+        vk::DescriptorSetLayoutBinding{1, vk::DescriptorType::eCombinedImageSampler,
+            1, vk::ShaderStageFlagBits::eFragment, nullptr},
     };
 
     vk::DescriptorSetLayoutCreateInfo createInfo(
@@ -827,9 +829,11 @@ void VulkanSDL2App::createGraphicsPipeline() {
     };
 
     // pipeline layout
+    // push constant: ivec2(standard, range)
+    vk::PushConstantRange pushRange(vk::ShaderStageFlagBits::eFragment, 0, 8);
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo = {
         {}, 1, &graphicsDescriptorSetLayout,
-        0, nullptr, nullptr
+        1, &pushRange, nullptr
     };
     graphicsPipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
 
@@ -918,7 +922,7 @@ void VulkanSDL2App::createVertexBuffer() {
 void VulkanSDL2App::createDescriptorPool() {
     std::array<vk::DescriptorPoolSize, 1> poolSizes;
     poolSizes[0].type = vk::DescriptorType::eCombinedImageSampler;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT) * 2;
 
     graphicsDescriptorPool = device.createDescriptorPool(
         vk::DescriptorPoolCreateInfo(
@@ -938,23 +942,30 @@ void VulkanSDL2App::createDescriptorSets() {
 }
 
 void VulkanSDL2App::initTextureResource() {
-    const auto texture = Texture(device);
+    const auto texture = NV12Texture(device);
     textures.assign(MAX_FRAMES_IN_FLIGHT, texture);
 }
 
 void VulkanSDL2App::createStagingBuffers() {
-    int textureWidth = mediaWidth;
-    int textureHeight = mediaHeight;
-    vk::DeviceSize imageSize = textureWidth * textureHeight * 4;
+    // +128 margin: hardware decoders may output coded-size frames
+    // (H.265 CTU-aligned) larger than display size
+    int texW = mediaWidth  + 128;
+    int texH = mediaHeight + 128;
+    vk::DeviceSize ySize  = texW * texH;
+    vk::DeviceSize uvSize = texW * texH / 2;
 
-    stagingBuffers.resize(MAX_FRAMES_IN_FLIGHT);
-    stagingBufferMemories.resize(MAX_FRAMES_IN_FLIGHT);
+    stagingBuffersY.resize(MAX_FRAMES_IN_FLIGHT);
+    stagingBufferMemoriesY.resize(MAX_FRAMES_IN_FLIGHT);
+    stagingBuffersUV.resize(MAX_FRAMES_IN_FLIGHT);
+    stagingBufferMemoriesUV.resize(MAX_FRAMES_IN_FLIGHT);
 
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc,
+        createBuffer(ySize, vk::BufferUsageFlagBits::eTransferSrc,
             vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-            stagingBuffers[i], stagingBufferMemories[i]
-        );
+            stagingBuffersY[i], stagingBufferMemoriesY[i]);
+        createBuffer(uvSize, vk::BufferUsageFlagBits::eTransferSrc,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+            stagingBuffersUV[i], stagingBufferMemoriesUV[i]);
     }
 }
 
@@ -1089,135 +1100,128 @@ void VulkanSDL2App::reCreateSwapChain() {
 }
 
 void VulkanSDL2App::updateTexture(uint32_t currentFrame, uint32_t imageIndex, std::shared_ptr<FFmpegDecoder::Frame> frame) {
+    const int w = frame->data->width;
+    const int h = frame->data->height;
+    const vk::DeviceSize ySize  = w * h;
+    const vk::DeviceSize uvSize = w * h / 2;  // R8G8: (w/2)×(h/2) px × 2 B/px
+    const vk::Extent3D yExtent(static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1);
+    const vk::Extent3D uvExtent(static_cast<uint32_t>(w / 2), static_cast<uint32_t>(h / 2), 1);
 
-    int textureWidth = frame->data->width;
-    int textureHeight = frame->data->height;
-    vk::DeviceSize imageSize = textureWidth * textureHeight * 4;
+    uint8_t* srcY  = frame->data->data[0];
+    uint8_t* srcUV = frame->data->data[1];
+    int strideY  = frame->data->linesize[0];
+    int strideUV = frame->data->linesize[1];
 
-    // 1. CPU copy frame data into per-frame staging buffer
-    void *data = device.mapMemory(stagingBufferMemories[currentFrame], 0, imageSize);
-    memcpy(data, frame->data->data[0], static_cast<size_t>(imageSize));
-    device.unmapMemory(stagingBufferMemories[currentFrame]);
+    bool firstUse = !textures[imageIndex].useful;
 
-    // 2. Create GPU image on first use for this swapchain image
-    if (!textures[imageIndex].useful) {
-        createImage(static_cast<uint32_t>(textureWidth), static_cast<uint32_t>(textureHeight), 1, vk::SampleCountFlagBits::e1,
-            vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
-            vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst
-            | vk::ImageUsageFlagBits::eSampled, vk::MemoryPropertyFlagBits::eDeviceLocal,
-            textures[imageIndex].image, textures[imageIndex].memory
-        );
+    // ---- upload Y plane --------------------------------------------------
+    void* yData = device.mapMemory(stagingBufferMemoriesY[currentFrame], 0, ySize);
+    if (strideY == w) {
+        memcpy(yData, srcY, static_cast<size_t>(ySize));
+    } else {
+        for (int row = 0; row < h; row++)
+            memcpy(static_cast<uint8_t*>(yData) + row * w, srcY + row * strideY, w);
+    }
+    device.unmapMemory(stagingBufferMemoriesY[currentFrame]);
+
+    // ---- upload UV plane -------------------------------------------------
+    void* uvData = device.mapMemory(stagingBufferMemoriesUV[currentFrame], 0, uvSize);
+    if (strideUV == w) {
+        memcpy(uvData, srcUV, static_cast<size_t>(uvSize));
+    } else {
+        for (int row = 0; row < h / 2; row++)
+            memcpy(static_cast<uint8_t*>(uvData) + row * w, srcUV + row * strideUV, w);
+    }
+    device.unmapMemory(stagingBufferMemoriesUV[currentFrame]);
+
+    // ---- create GPU images on first use -----------------------------------
+    if (firstUse) {
+        vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eTransferDst
+                                  | vk::ImageUsageFlagBits::eSampled;
+        createImage(static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1,
+                    vk::SampleCountFlagBits::e1, vk::Format::eR8Unorm,
+                    vk::ImageTiling::eOptimal, usage,
+                    vk::MemoryPropertyFlagBits::eDeviceLocal,
+                    textures[imageIndex].yImage, textures[imageIndex].yMemory);
+        createImage(static_cast<uint32_t>(w / 2), static_cast<uint32_t>(h / 2), 1,
+                    vk::SampleCountFlagBits::e1, vk::Format::eR8G8Unorm,
+                    vk::ImageTiling::eOptimal, usage,
+                    vk::MemoryPropertyFlagBits::eDeviceLocal,
+                    textures[imageIndex].uvImage, textures[imageIndex].uvMemory);
     }
 
-    // 3. Record transfer commands: barriers + copy, all in one command buffer
+    // ---- record transfer commands -----------------------------------------
     vk::CommandBuffer cmd = transferCommandBuffers[currentFrame];
     cmd.reset(vk::CommandBufferResetFlags(0));
     cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-    // Barrier A: currentLayout → TransferDstOptimal
-    vk::ImageLayout oldLayout = textures[imageIndex].useful
-        ? vk::ImageLayout::eShaderReadOnlyOptimal
-        : vk::ImageLayout::eUndefined;
-
-    vk::ImageMemoryBarrier barrierA{};
-    barrierA.oldLayout     = oldLayout;
-    barrierA.newLayout     = vk::ImageLayout::eTransferDstOptimal;
-    barrierA.srcAccessMask = (oldLayout == vk::ImageLayout::eUndefined)
-        ? vk::AccessFlags(0)
-        : vk::AccessFlagBits::eShaderRead;
-    barrierA.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
-    barrierA.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrierA.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrierA.image = textures[imageIndex].image;
-    barrierA.subresourceRange = vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-
-    vk::PipelineStageFlags srcStage = (oldLayout == vk::ImageLayout::eUndefined)
-        ? vk::PipelineStageFlagBits::eTopOfPipe
-        : vk::PipelineStageFlagBits::eFragmentShader;
-
-    cmd.pipelineBarrier(srcStage, vk::PipelineStageFlagBits::eTransfer,
-        vk::DependencyFlags(0), 0, nullptr, 0, nullptr, 1, &barrierA);
-
-    // Copy: staging buffer → device-local image
-    vk::BufferImageCopy region{
-        0, 0, 0,
-        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
-        vk::Offset3D(0, 0, 0),
-        vk::Extent3D(static_cast<uint32_t>(textureWidth), static_cast<uint32_t>(textureHeight), 1)
+    auto doTransfer = [&](vk::Image image, vk::Buffer buffer, vk::DeviceSize size,
+                           const vk::Extent3D& extent, bool first) {
+        vk::ImageLayout oldLayout = first ? vk::ImageLayout::eUndefined
+                                          : vk::ImageLayout::eShaderReadOnlyOptimal;
+        vk::ImageMemoryBarrier pre{};
+        pre.oldLayout     = oldLayout;
+        pre.newLayout     = vk::ImageLayout::eTransferDstOptimal;
+        pre.srcAccessMask = first ? vk::AccessFlags(0) : vk::AccessFlagBits::eShaderRead;
+        pre.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+        pre.image = image;
+        pre.subresourceRange = vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+        vk::PipelineStageFlags srcStage = first ? vk::PipelineStageFlagBits::eTopOfPipe
+                                                : vk::PipelineStageFlagBits::eFragmentShader;
+        cmd.pipelineBarrier(srcStage, vk::PipelineStageFlagBits::eTransfer,
+                            vk::DependencyFlags(0), 0, nullptr, 0, nullptr, 1, &pre);
+        vk::BufferImageCopy region{0, 0, 0,
+            vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
+            vk::Offset3D(0, 0, 0), extent};
+        cmd.copyBufferToImage(buffer, image, vk::ImageLayout::eTransferDstOptimal, 1, &region);
+        vk::ImageMemoryBarrier post{};
+        post.oldLayout     = vk::ImageLayout::eTransferDstOptimal;
+        post.newLayout     = vk::ImageLayout::eShaderReadOnlyOptimal;
+        post.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+        post.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+        post.image = image;
+        post.subresourceRange = vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                            vk::PipelineStageFlagBits::eFragmentShader,
+                            vk::DependencyFlags(0), 0, nullptr, 0, nullptr, 1, &post);
     };
-    cmd.copyBufferToImage(stagingBuffers[currentFrame], textures[imageIndex].image,
-        vk::ImageLayout::eTransferDstOptimal, 1, &region);
-
-    // Barrier B: TransferDstOptimal → ShaderReadOnlyOptimal
-    vk::ImageMemoryBarrier barrierB{};
-    barrierB.oldLayout     = vk::ImageLayout::eTransferDstOptimal;
-    barrierB.newLayout     = vk::ImageLayout::eShaderReadOnlyOptimal;
-    barrierB.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-    barrierB.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-    barrierB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrierB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrierB.image = textures[imageIndex].image;
-    barrierB.subresourceRange = vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-
-    cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-        vk::PipelineStageFlagBits::eFragmentShader,
-        vk::DependencyFlags(0), 0, nullptr, 0, nullptr, 1, &barrierB);
-
+    doTransfer(textures[imageIndex].yImage,  stagingBuffersY[currentFrame],  ySize,  yExtent,  firstUse);
+    doTransfer(textures[imageIndex].uvImage, stagingBuffersUV[currentFrame], uvSize, uvExtent, firstUse);
     cmd.end();
 
-    // 4. Create ImageView / Sampler on first use (CPU-side, no GPU submission needed)
-    if (!textures[imageIndex].useful) {
-        textures[imageIndex].imageView = device.createImageView(
-            vk::ImageViewCreateInfo(
-                {}, textures[imageIndex].image,
-                vk::ImageViewType::e2D, vk::Format::eR8G8B8A8Srgb, {},
-                vk::ImageSubresourceRange(
-                    vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1
-                )
-            )
-        );
-
-        textures[imageIndex].sampler = device.createSampler(
-            vk::SamplerCreateInfo(
-                {}, vk::Filter::eLinear, vk::Filter::eLinear,
-                vk::SamplerMipmapMode::eLinear,
-                vk::SamplerAddressMode::eClampToEdge,
-                vk::SamplerAddressMode::eClampToEdge,
-                vk::SamplerAddressMode::eClampToEdge,
-                0.0f, vk::False, 0,
-                vk::False, vk::CompareOp::eAlways,
-                0.0f, 0.0f,
-                vk::BorderColor::eIntOpaqueBlack, vk::False
-            )
-        );
+    // ---- create views / samplers on first use -----------------------------
+    if (firstUse) {
+        textures[imageIndex].yImageView = device.createImageView(vk::ImageViewCreateInfo(
+            {}, textures[imageIndex].yImage, vk::ImageViewType::e2D, vk::Format::eR8Unorm,
+            {}, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
+        textures[imageIndex].uvImageView = device.createImageView(vk::ImageViewCreateInfo(
+            {}, textures[imageIndex].uvImage, vk::ImageViewType::e2D, vk::Format::eR8G8Unorm,
+            {}, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
+        auto samplerInfo = vk::SamplerCreateInfo(
+            {}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
+            vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge,
+            vk::SamplerAddressMode::eClampToEdge, 0.0f, vk::False, 0, vk::False,
+            vk::CompareOp::eAlways, 0.0f, 0.0f, vk::BorderColor::eIntOpaqueBlack, vk::False);
+        textures[imageIndex].ySampler  = device.createSampler(samplerInfo);
+        textures[imageIndex].uvSampler = device.createSampler(samplerInfo);
     }
 
-    // 5. Update descriptor set to point to this swapchain image's texture
-    vk::DescriptorImageInfo imageInfo = {
-        textures[imageIndex].sampler, textures[imageIndex].imageView, vk::ImageLayout::eShaderReadOnlyOptimal
+    // ---- update descriptor sets -------------------------------------------
+    vk::DescriptorImageInfo yInfo  = { textures[imageIndex].ySampler,  textures[imageIndex].yImageView,  vk::ImageLayout::eShaderReadOnlyOptimal };
+    vk::DescriptorImageInfo uvInfo = { textures[imageIndex].uvSampler, textures[imageIndex].uvImageView, vk::ImageLayout::eShaderReadOnlyOptimal };
+    std::array<vk::WriteDescriptorSet, 2> writes = {
+        vk::WriteDescriptorSet(graphicsDescriptorSets[imageIndex], 0, 0, 1,
+                               vk::DescriptorType::eCombinedImageSampler, &yInfo),
+        vk::WriteDescriptorSet(graphicsDescriptorSets[imageIndex], 1, 0, 1,
+                               vk::DescriptorType::eCombinedImageSampler, &uvInfo),
     };
-
-    std::array<vk::WriteDescriptorSet, 1> descriptorWrites = {
-        vk::WriteDescriptorSet(
-            graphicsDescriptorSets[imageIndex], 0, 0,
-            1, vk::DescriptorType::eCombinedImageSampler,
-            &imageInfo
-        )
-    };
-
+    device.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     textures[imageIndex].useful = true;
 
-    device.updateDescriptorSets(static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
-
-    // 6. Submit transfer commands to transfer queue — non-blocking!
-    vk::SubmitInfo transferSubmit{
-        0, nullptr, nullptr,
-        1, &cmd,
-        1, &transferCompleteSemaphores[currentFrame]
-    };
-    if (transferQueue.submit(1, &transferSubmit, nullptr) != vk::Result::eSuccess) {
+    // ---- submit transfer commands -----------------------------------------
+    vk::SubmitInfo transferSubmit{0, nullptr, nullptr, 1, &cmd, 1, &transferCompleteSemaphores[currentFrame]};
+    if (transferQueue.submit(1, &transferSubmit, nullptr) != vk::Result::eSuccess)
         throw std::runtime_error("failed to submit transfer commands!");
-    }
 }
 
 void VulkanSDL2App::recordCommandBuffer(vk::CommandBuffer commandBuffer, uint32_t imageIndex) {
@@ -1290,6 +1294,9 @@ void VulkanSDL2App::recordCommandBuffer(vk::CommandBuffer commandBuffer, uint32_
         0, nullptr
     );
 
+    commandBuffer.pushConstants<int32_t>(graphicsPipelineLayout,
+        vk::ShaderStageFlagBits::eFragment, 0,
+        {colorStandard, colorRange});
     commandBuffer.draw(4, 1, 0, 0);
 
     // end render pass

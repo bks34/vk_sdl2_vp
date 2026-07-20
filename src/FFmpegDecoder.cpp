@@ -5,10 +5,12 @@
 #include "FFmpegDecoder.h"
 
 #include <array>
+#include <cctype>
 #include <iostream>
 #include <map>
 #include <SDL_cpuinfo.h>
 #include <stdexcept>
+
 
 
 
@@ -20,9 +22,11 @@ static std::map<SDL_AudioFormat, AVSampleFormat> AUDIO_FORMAT_MAP = {
     {AUDIO_F32SYS, AV_SAMPLE_FMT_FLT}
 };
 
-FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& audio_spec, bool replay) {
+FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& audio_spec,
+                             bool replay, const std::string& hwAccel) {
     this->filename = filename;
     this->replay = replay;
+    this->hwAccelPref = hwAccel;
     this->width = 600;
     this->height = 600;
     videoDecoder.setMaxFrameSize(5);
@@ -101,7 +105,7 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
         }
 
         pSwsCtx = sws_getContext(width, height, videoDecoder.pAVCtx->pix_fmt,
-            width, height, AV_PIX_FMT_RGBA,
+            width, height, AV_PIX_FMT_NV12,
             SWS_BICUBIC, nullptr, nullptr, nullptr);
 
     }
@@ -149,6 +153,8 @@ FFmpegDecoder::FFmpegDecoder(const std::string& filename, const SDL_AudioSpec& a
 
         swr_init(pSwrCtx);
     }
+
+    tryInitHwDecoder();
 }
 
 void FFmpegDecoder::run() {
@@ -201,6 +207,22 @@ bool FFmpegDecoder::hasAudio() {
 
 std::string FFmpegDecoder::getVideoCodecName() const {
     return videoDecoder.codecName;
+}
+
+int FFmpegDecoder::getColorStandard() const {
+    if (videoIndex < 0) return 0;
+    auto cs = pFormatCtx->streams[videoIndex]->codecpar->color_space;
+    // AVCOL_SPC_BT709=1, BT470BG=5, SMPTE170M=6, BT2020_NCL=9, BT2020_CL=10
+    if (cs == AVCOL_SPC_BT2020_NCL || cs == AVCOL_SPC_BT2020_CL) return 2;
+    if (cs == AVCOL_SPC_BT709) return 1;
+    return 0;  // BT.601 default
+}
+
+int FFmpegDecoder::getColorRange() const {
+    if (videoIndex < 0) return 0;
+    // AVCOL_RANGE_JPEG = 2 (full range), AVCOL_RANGE_MPEG = 1 (limited)
+    auto cr = pFormatCtx->streams[videoIndex]->codecpar->color_range;
+    return (cr == AVCOL_RANGE_JPEG) ? 1 : 0;
 }
 
 std::string FFmpegDecoder::getAudioCodecName() const {
@@ -268,6 +290,185 @@ double FFmpegDecoder::getDelay(int64_t videoPts) {
     return videoPts * av_q2d(videoTimeBase) - audioClock.pts * av_q2d(audioTimeBase);
 }
 
+// get_format callback — tells the software decoder which hardware pixel
+// format to use.  Modeled after FFmpeg's official hw_decode.c example.
+AVPixelFormat FFmpegDecoder::getHwFormat(AVCodecContext* ctx,
+                                          const AVPixelFormat* pix_fmts) {
+    auto* self = static_cast<FFmpegDecoder*>(ctx->opaque);
+    for (const AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
+        if (*p == self->hw_pix_fmt_) return *p;
+    }
+    std::fprintf(stderr, "[hw] getHwFormat: hw format not offered by decoder\n");
+    return AV_PIX_FMT_NONE;
+}
+
+// Open a codec context.  If hwDevice/hwFrames are provided the codec will
+// use hardware acceleration (either a dedicated hw codec or the software
+// codec with the get_format callback set).
+static bool openCodec(AVCodecContext*& ctx, const AVCodec* codec,
+                       AVFormatContext* fmt, int streamIdx,
+                       AVBufferRef* hwDevice, AVBufferRef* hwFrames,
+                       FFmpegDecoder* self) {
+    avcodec_free_context(&ctx);
+    ctx = avcodec_alloc_context3(codec);
+    if (!ctx) return false;
+
+    avcodec_parameters_to_context(ctx, fmt->streams[streamIdx]->codecpar);
+    if (hwDevice) {
+        ctx->hw_device_ctx = av_buffer_ref(hwDevice);
+        ctx->opaque = self;
+        ctx->get_format = FFmpegDecoder::getHwFormat;
+        // Disable frame threading when using hwaccel — the GPU does the
+        // heavy lifting, and frame-worker threads can release hw-frame
+        // references prematurely, leading to double-free on exit.
+        ctx->thread_count = 1;
+        ctx->thread_type  = 0;
+    } else {
+        ctx->thread_count = 0;
+        ctx->thread_type  = FF_THREAD_FRAME | FF_THREAD_SLICE;
+    }
+
+    return avcodec_open2(ctx, codec, nullptr) >= 0;
+}
+
+bool FFmpegDecoder::tryInitHwDecoder() {
+    if (videoIndex < 0 || videoIsCover) return false;
+
+    if (hwAccelPref == "none") {
+        std::printf("Hardware acceleration disabled by user.\n");
+        return false;
+    }
+
+    const AVCodec* swCodec =
+        avcodec_find_decoder(pFormatCtx->streams[videoIndex]->codecpar->codec_id);
+    if (!swCodec) return false;
+
+    std::string pref = hwAccelPref;
+    for (char& c : pref) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+
+    struct HwBackend {
+        const char* name;
+        AVHWDeviceType type;
+        AVPixelFormat hwFmt, swFmt;
+        const char* codecSfx;    // e.g. "vaapi", "nvdec"
+        const char* deviceOpt;   // e.g. "0" for CUDA GPU index
+    };
+    const HwBackend backends[] = {
+        { "VAAPI", AV_HWDEVICE_TYPE_VAAPI, AV_PIX_FMT_VAAPI, AV_PIX_FMT_NV12,
+          "vaapi", nullptr },
+        { "CUDA",  AV_HWDEVICE_TYPE_CUDA,  AV_PIX_FMT_CUDA,  AV_PIX_FMT_NV12,
+          "nvdec", "0"  },
+    };
+
+    for (const auto& b : backends) {
+        if (pref != "auto") {
+            std::string key(b.name);
+            for (char& c : key) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+            if (pref != key) continue;
+        }
+
+        const int oldLog = av_log_get_level();
+        av_log_set_level(AV_LOG_QUIET);
+
+        // ---- 1. create hardware device --------------------------------------------
+        AVDictionary* opts = nullptr;
+        if (b.deviceOpt) av_dict_set(&opts, "device", b.deviceOpt, 0);
+        int ret = av_hwdevice_ctx_create(&hw_device_ctx, b.type, nullptr, opts, 0);
+        av_dict_free(&opts);
+
+        if (ret < 0) {
+            std::printf("[hw probe] %-8s — device unavailable\n", b.name);
+            av_log_set_level(oldLog);
+            continue;
+        }
+
+        // ---- 2. validate hw config (official example pattern) ---------------------
+        hw_pix_fmt_ = AV_PIX_FMT_NONE;
+        for (int i = 0; ; i++) {
+            const AVCodecHWConfig* cfg = avcodec_get_hw_config(swCodec, i);
+            if (!cfg) break;
+            if (cfg->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX &&
+                cfg->device_type == b.type) {
+                hw_pix_fmt_ = cfg->pix_fmt;
+                break;
+            }
+        }
+        if (hw_pix_fmt_ == AV_PIX_FMT_NONE) {
+            std::printf("[hw probe] %-8s — no hwaccel config for decoder '%s'\n",
+                        b.name, swCodec->name);
+            av_buffer_unref(&hw_device_ctx);
+            av_log_set_level(oldLog);
+            continue;
+        }
+
+        // ---- 3. create hardware frames context ------------------------------------
+        hw_frames_ref = av_hwframe_ctx_alloc(hw_device_ctx);
+        if (!hw_frames_ref) {
+            av_buffer_unref(&hw_device_ctx);
+            av_log_set_level(oldLog);
+            continue;
+        }
+        auto* fctx = reinterpret_cast<AVHWFramesContext*>(hw_frames_ref->data);
+        fctx->format            = hw_pix_fmt_;
+        fctx->sw_format         = AV_PIX_FMT_NV12;
+        fctx->width             = width;
+        fctx->height            = height;
+        fctx->initial_pool_size = 20;
+        if (av_hwframe_ctx_init(hw_frames_ref) < 0) {
+            std::printf("[hw probe] %-8s — frames-ctx init failed\n", b.name);
+            av_buffer_unref(&hw_frames_ref);
+            av_buffer_unref(&hw_device_ctx);
+            av_log_set_level(oldLog);
+            continue;
+        }
+
+        // ---- 4. open codec --------------------------------------------------------
+        bool opened = false;
+
+        // 4a. try dedicated hardware codec first (e.g. h264_qsv, hevc_vaapi)
+        std::string hwName = std::string(swCodec->name) + "_" + b.codecSfx;
+        const AVCodec* hwCodec = avcodec_find_decoder_by_name(hwName.c_str());
+        if (hwCodec)
+            opened = openCodec(videoDecoder.pAVCtx, hwCodec, pFormatCtx,
+                                videoIndex, hw_device_ctx, hw_frames_ref, this);
+        // CUDA has an alias: _cuvid (older API)
+        if (!opened && b.type == AV_HWDEVICE_TYPE_CUDA) {
+            std::string cuvName = std::string(swCodec->name) + "_cuvid";
+            hwCodec = avcodec_find_decoder_by_name(cuvName.c_str());
+            if (hwCodec)
+                opened = openCodec(videoDecoder.pAVCtx, hwCodec, pFormatCtx,
+                                    videoIndex, hw_device_ctx, hw_frames_ref, this);
+        }
+
+        // 4b. fall back: software codec + hwaccel (get_format callback drives it)
+        if (!opened) {
+            opened = openCodec(videoDecoder.pAVCtx, swCodec, pFormatCtx,
+                                videoIndex, hw_device_ctx, hw_frames_ref, this);
+        }
+
+        av_log_set_level(oldLog);
+
+        if (opened) {
+            videoDecoder.codecName = videoDecoder.pAVCtx->codec->name;
+            useHwDecode = true;
+            std::printf("Using hardware acceleration: %s (+%s, %s→%s)\n",
+                        videoDecoder.codecName.c_str(), b.name,
+                        av_get_pix_fmt_name(hw_pix_fmt_),
+                        av_get_pix_fmt_name(b.swFmt));
+            return true;
+        }
+
+        // rollback — restore software codec for next backend attempt
+        openCodec(videoDecoder.pAVCtx, swCodec, pFormatCtx,
+                   videoIndex, nullptr, nullptr, this);
+        av_buffer_unref(&hw_frames_ref);
+        av_buffer_unref(&hw_device_ctx);
+    }
+
+    std::printf("Hardware acceleration not available, using software decoder: %s\n",
+                swCodec->name);
+    return false;
+}
 
 void FFmpegDecoder::readPacket() {
     if (audioIndex >= 0) {
@@ -396,6 +597,7 @@ void FFmpegDecoder::readPacket() {
 
 void FFmpegDecoder::videoDecode() {
     AVFrame* pAVframe = av_frame_alloc();
+
     while (videoDecoder.threadRunning) {
         while (paused) {}
         std::shared_ptr<Packet> pPacket;
@@ -450,20 +652,53 @@ void FFmpegDecoder::videoDecode() {
                 continue;
             }
 
-            AVFrame *pAVframeRGB = av_frame_alloc();
-            pAVframeRGB->width = width;
-            pAVframeRGB->height = height;
-            pAVframeRGB->format = AV_PIX_FMT_RGBA;
-            if (!av_image_alloc(pAVframeRGB->data, pAVframeRGB->linesize, width, height, AV_PIX_FMT_RGBA, 1)) {
-                throw std::runtime_error("Couldn't allocate pixel buffer for pAVframeRGB");
+            // produce NV12 frame (hardware: transfer, software: sws_scale)
+            AVFrame* outFrame = av_frame_alloc();
+            if (useHwDecode && pAVframe->format == hw_pix_fmt_) {
+                AVFrame* tmpFrame = av_frame_alloc();
+                if (av_hwframe_transfer_data(tmpFrame, pAVframe, 0) < 0) {
+                    std::fprintf(stderr, "[hw] transfer data failed\n");
+                    av_frame_free(&tmpFrame);
+                    av_frame_free(&outFrame);
+                    continue;
+                }
+                // Create/cache sws_scale to convert GPU→NV12
+                int srcFmt = tmpFrame->format;
+                if (srcFmt != hwSwsSrcFmt) {
+                    sws_freeContext(hwSwsCtx);
+                    hwSwsCtx = sws_getContext(tmpFrame->width, tmpFrame->height,
+                        static_cast<AVPixelFormat>(srcFmt),
+                        tmpFrame->width, tmpFrame->height,
+                        AV_PIX_FMT_NV12, SWS_BICUBIC, nullptr, nullptr, nullptr);
+                    hwSwsSrcFmt = srcFmt;
+                }
+                outFrame->width  = pAVframe->width;
+                outFrame->height = pAVframe->height;
+                outFrame->format = AV_PIX_FMT_NV12;
+                if (av_frame_get_buffer(outFrame, 0) < 0 ||
+                    !hwSwsCtx) {
+                    av_frame_free(&tmpFrame);
+                    av_frame_free(&outFrame);
+                    continue;
+                }
+                sws_scale(hwSwsCtx, tmpFrame->data, tmpFrame->linesize, 0,
+                          tmpFrame->height, outFrame->data, outFrame->linesize);
+                av_frame_free(&tmpFrame);
+            } else {
+                // software path: sws_scale to NV12
+                outFrame->width  = width;
+                outFrame->height = height;
+                outFrame->format = AV_PIX_FMT_NV12;
+                if (av_frame_get_buffer(outFrame, 0) < 0) {
+                    av_frame_free(&outFrame);
+                    continue;
+                }
+                sws_scale(pSwsCtx, pAVframe->data, pAVframe->linesize, 0,
+                          height, outFrame->data, outFrame->linesize);
             }
 
-            if (!sws_scale(pSwsCtx, pAVframe->data, pAVframe->linesize, 0,
-                           height, pAVframeRGB->data, pAVframeRGB->linesize)) {
-                throw std::runtime_error("Convert to RGB32 error!");
-            }
             std::shared_ptr<Frame> frame = std::make_shared<Frame>();
-            frame->data = pAVframeRGB;
+            frame->data = outFrame;
             frame->videoPts = clock.videoPts;
 
             // push to queue
@@ -491,9 +726,15 @@ void FFmpegDecoder::videoDecode() {
     }
 
     av_frame_free(&pAVframe);
+    sws_freeContext(hwSwsCtx);
+    // Codec must be flushed + freed BEFORE hw resources —
+    // the codec holds its own references to them (av_buffer_ref).
     sws_freeContext(pSwsCtx);
     avcodec_flush_buffers(videoDecoder.pAVCtx);
     avcodec_free_context(&videoDecoder.pAVCtx);
+
+    av_buffer_unref(&hw_frames_ref);
+    av_buffer_unref(&hw_device_ctx);
 
     videoDecoder.threadStopped = true;
 }

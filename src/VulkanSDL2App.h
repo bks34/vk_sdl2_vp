@@ -13,6 +13,9 @@ struct Config {
     bool DiscreteGpuFirst = false;
 
     bool autoReplay = false;
+
+    // hardware acceleration backend: "auto" | "none" | "vaapi" | "cuda" | "vulkan"
+    std::string hwAccel = "none";
 };
 
 class VulkanSDL2App {
@@ -77,6 +80,8 @@ private:
     std::mutex windowResizeMutex;
     int windowWidth, windowHeight;
     int mediaWidth, mediaHeight;
+    int colorStandard = 0;  // 0=BT.601, 1=BT.709, 2=BT.2020
+    int colorRange    = 0;  // 0=limited, 1=full
     bool isFullscreen = false;
     std::atomic<bool> frameBufferResized = false;
 
@@ -131,40 +136,44 @@ private:
     vk::Buffer vertexBuffer;
     vk::DeviceMemory vertexBufferMemory;
 
-    std::vector<vk::Buffer> stagingBuffers;
-    std::vector<vk::DeviceMemory> stagingBufferMemories;
+    // per-frame staging buffers for Y and UV planes (NV12)
+    std::vector<vk::Buffer> stagingBuffersY;
+    std::vector<vk::DeviceMemory> stagingBufferMemoriesY;
+    std::vector<vk::Buffer> stagingBuffersUV;
+    std::vector<vk::DeviceMemory> stagingBufferMemoriesUV;
 
     std::vector<vk::CommandBuffer> transferCommandBuffers;
     std::vector<vk::Semaphore> transferCompleteSemaphores;
 
-    struct Texture {
-        explicit Texture(const vk::Device device) : device(device) {}
+    // Holds a pair of GPU images: Y (R8, full-res) and UV (R8G8, half-height)
+    struct NV12Texture {
+        explicit NV12Texture(const vk::Device device) : device(device) {}
 
-        ~Texture() {
-            destroy();
-        }
+        ~NV12Texture() { destroy(); }
 
         vk::Device device;
-
-        vk::Image image;
-        vk::DeviceMemory memory;
-        vk::ImageView imageView;
-        vk::Sampler sampler;
-
+        vk::Image yImage,  uvImage;
+        vk::DeviceMemory yMemory, uvMemory;
+        vk::ImageView yImageView, uvImageView;
+        vk::Sampler ySampler, uvSampler;
         bool useful = false;
 
         void destroy() {
             if (useful) {
-                device.destroySampler(sampler);
-                device.destroyImageView(imageView);
-                device.destroyImage(image);
-                device.freeMemory(memory);
+                device.destroySampler(ySampler);
+                device.destroySampler(uvSampler);
+                device.destroyImageView(yImageView);
+                device.destroyImageView(uvImageView);
+                device.destroyImage(yImage);
+                device.destroyImage(uvImage);
+                device.freeMemory(yMemory);
+                device.freeMemory(uvMemory);
                 useful = false;
             }
         }
     };
 
-    std::vector<Texture> textures;
+    std::vector<NV12Texture> textures;
 
     uint32_t currentFrame = 0;
     int MAX_FRAMES_IN_FLIGHT;
