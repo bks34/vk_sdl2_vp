@@ -449,6 +449,7 @@ bool FFmpegDecoder::tryInitHwDecoder() {
         if (opened) {
             videoDecoder.codecName = videoDecoder.pAVCtx->codec->name;
             useHwDecode = true;
+            hwBackendName = b.name;
             std::printf("Using hardware acceleration: %s (+%s, %s→%s)\n",
                         videoDecoder.codecName.c_str(), b.name,
                         av_get_pix_fmt_name(hw_pix_fmt_),
@@ -465,6 +466,116 @@ bool FFmpegDecoder::tryInitHwDecoder() {
 
     std::printf("Hardware acceleration not available, using software decoder: %s\n",
                 swCodec->name);
+    return false;
+}
+
+bool FFmpegDecoder::initHwNV12Filter(AVBufferRef* hwFramesRef,
+                                      int codedW, int codedH) {
+    int ret = 0;
+    // Declare all locals up front (C++ forbids goto over initializers)
+    const AVFilter* bufSrcFilter   = nullptr;
+    const char*     scaleName      = nullptr;
+    const AVFilter* scaleFilter    = nullptr;
+    AVFilterContext* scaleCtx      = nullptr;
+    const AVFilter* downloadFilter = nullptr;
+    AVFilterContext* downloadCtx   = nullptr;
+    const AVFilter* bufSinkFilter  = nullptr;
+
+    hwFilterGraph = avfilter_graph_alloc();
+    if (!hwFilterGraph) {
+        std::fprintf(stderr, "[hw filter] failed to allocate filter graph\n");
+        return false;
+    }
+
+    // ---- 1. buffersrc --------------------------------------------------
+    bufSrcFilter = avfilter_get_by_name("buffer");
+    if (!bufSrcFilter) goto fail;
+
+    hwBufferSrcCtx = avfilter_graph_alloc_filter(hwFilterGraph,
+                                                  bufSrcFilter, "src");
+    if (!hwBufferSrcCtx) goto fail;
+
+    {
+        AVBufferSrcParameters* par = av_buffersrc_parameters_alloc();
+        if (!par) goto fail;
+        par->format        = hw_pix_fmt_;
+        par->width         = codedW;
+        par->height        = codedH;
+        par->time_base     = videoTimeBase;
+        par->hw_frames_ctx = av_buffer_ref(hwFramesRef);
+        ret = av_buffersrc_parameters_set(hwBufferSrcCtx, par);
+        av_free(par);
+        if (ret < 0) { std::fprintf(stderr, "[hw filter] buffersrc params failed\n"); goto fail; }
+    }
+
+    ret = avfilter_init_str(hwBufferSrcCtx, nullptr);
+    if (ret < 0) { std::fprintf(stderr, "[hw filter] buffersrc init failed\n"); goto fail; }
+
+    // ---- 2. scale_vaapi / scale_cuda -----------------------------------
+    if (hwBackendName == "VAAPI")      scaleName = "scale_vaapi";
+    else if (hwBackendName == "CUDA") scaleName = "scale_cuda";
+    else { std::fprintf(stderr, "[hw filter] unknown backend\n"); goto fail; }
+
+    scaleFilter = avfilter_get_by_name(scaleName);
+    if (!scaleFilter) { std::fprintf(stderr, "[hw filter] %s not found\n", scaleName); goto fail; }
+
+    scaleCtx = avfilter_graph_alloc_filter(hwFilterGraph, scaleFilter, "scale");
+    if (!scaleCtx) goto fail;
+
+    // critical: scale_vaapi/cuda is AVFILTER_FLAG_HWDEVICE — must set
+    // hw_device_ctx BEFORE init
+    scaleCtx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+
+    ret = avfilter_init_str(scaleCtx, "format=nv12");
+    if (ret < 0) { std::fprintf(stderr, "[hw filter] %s init failed\n", scaleName); goto fail; }
+
+    // ---- 3. hwdownload -------------------------------------------------
+    downloadFilter = avfilter_get_by_name("hwdownload");
+    if (!downloadFilter) { std::fprintf(stderr, "[hw filter] hwdownload not found\n"); goto fail; }
+
+    downloadCtx = avfilter_graph_alloc_filter(hwFilterGraph,
+                                               downloadFilter, "download");
+    if (!downloadCtx) goto fail;
+
+    ret = avfilter_init_str(downloadCtx, nullptr);
+    if (ret < 0) { std::fprintf(stderr, "[hw filter] hwdownload init failed\n"); goto fail; }
+
+    // ---- 4. buffersink (official pattern: alloc → opt_set → init) ------
+    bufSinkFilter = avfilter_get_by_name("buffersink");
+    if (!bufSinkFilter) { std::fprintf(stderr, "[hw filter] buffersink not found\n"); goto fail; }
+
+    hwBufferSinkCtx = avfilter_graph_alloc_filter(hwFilterGraph,
+                                                   bufSinkFilter, "sink");
+    if (!hwBufferSinkCtx) goto fail;
+
+    ret = av_opt_set(hwBufferSinkCtx, "pixel_formats", "nv12",
+                     AV_OPT_SEARCH_CHILDREN);
+    if (ret < 0) { std::fprintf(stderr, "[hw filter] buffersink pix_fmts failed\n"); goto fail; }
+
+    ret = avfilter_init_str(hwBufferSinkCtx, nullptr);
+    if (ret < 0) { std::fprintf(stderr, "[hw filter] buffersink init failed\n"); goto fail; }
+
+    // ---- 5. link: src → scale → download → sink -----------------------
+    if (avfilter_link(hwBufferSrcCtx, 0, scaleCtx, 0) < 0)      { std::fprintf(stderr, "[hw filter] link 1 failed\n"); goto fail; }
+    if (avfilter_link(scaleCtx, 0, downloadCtx, 0) < 0)         { std::fprintf(stderr, "[hw filter] link 2 failed\n"); goto fail; }
+    if (avfilter_link(downloadCtx, 0, hwBufferSinkCtx, 0) < 0)  { std::fprintf(stderr, "[hw filter] link 3 failed\n"); goto fail; }
+
+    // ---- 6. finalize ---------------------------------------------------
+    if (avfilter_graph_config(hwFilterGraph, nullptr) < 0) {
+        std::fprintf(stderr, "[hw filter] graph config failed\n");
+        goto fail;
+    }
+
+    std::printf("[hw filter] GPU NV12 filter graph initialized (%s, %dx%d)\n",
+                scaleName, codedW, codedH);
+    return true;
+
+fail:
+    std::fprintf(stderr, "[hw filter] init failed, falling back to sws_scale\n");
+    avfilter_graph_free(&hwFilterGraph);
+    hwFilterGraph   = nullptr;
+    hwBufferSrcCtx  = nullptr;
+    hwBufferSinkCtx = nullptr;
     return false;
 }
 
@@ -511,6 +622,12 @@ void FFmpegDecoder::readPacket() {
                         avcodec_flush_buffers(videoDecoder.pAVCtx);
                         mutexVideoCodec.unlock();
                         videoDecoder.frameQueue.clear();
+
+                        // Signal videoDecode to rebuild filter graph on
+                        // the next frame — the decoder's hw_frames_ctx may
+                        // have changed after seek.  The actual free happens
+                        // on the videoDecode thread to avoid a race.
+                        hwFilterNeedRebuild = true;
                     }
                 }
                 if (audioIndex >= 0) {
@@ -650,38 +767,72 @@ void FFmpegDecoder::videoDecode() {
                 continue;
             }
 
-            // produce NV12 frame (hardware: transfer, software: sws_scale)
+            // produce NV12 frame (hardware: GPU filter graph, software: sws_scale)
             AVFrame* outFrame = av_frame_alloc();
             if (useHwDecode && pAVframe->format == hw_pix_fmt_) {
-                AVFrame* tmpFrame = av_frame_alloc();
-                if (av_hwframe_transfer_data(tmpFrame, pAVframe, 0) < 0) {
-                    std::fprintf(stderr, "[hw] transfer data failed\n");
+                // Lazy init / recreate GPU filter graph on first frame,
+                // when coded dimensions change, or after seek.
+                if (hwFilterNeedRebuild.exchange(false) ||
+                    !hwFilterGraph ||
+                    pAVframe->width  != hwFilterW ||
+                    pAVframe->height != hwFilterH) {
+                    avfilter_graph_free(&hwFilterGraph);
+                    hwFilterGraph   = nullptr;
+                    hwBufferSrcCtx  = nullptr;
+                    hwBufferSinkCtx = nullptr;
+                    hwFilterW = pAVframe->width;
+                    hwFilterH = pAVframe->height;
+                    initHwNV12Filter(pAVframe->hw_frames_ctx,
+                                     hwFilterW, hwFilterH);
+                }
+
+                if (hwFilterGraph) {
+                    // === GPU filter graph path (primary) ===
+                    int ret = av_buffersrc_add_frame_flags(hwBufferSrcCtx,
+                                        pAVframe, AV_BUFFERSRC_FLAG_NO_CHECK_FORMAT);
+                    if (ret < 0) {
+                        std::fprintf(stderr, "[hw] buffersrc add frame failed\n");
+                        av_frame_free(&outFrame);
+                        continue;
+                    }
+                    ret = av_buffersink_get_frame(hwBufferSinkCtx, outFrame);
+                    if (ret < 0) {
+                        std::fprintf(stderr, "[hw] buffersink get frame failed\n");
+                        av_frame_free(&outFrame);
+                        continue;
+                    }
+                    // outFrame is now CPU NV12 — ready for Vulkan pipeline
+                } else {
+                    // === Fallback: CPU-side sws_scale ===
+                    AVFrame* tmpFrame = av_frame_alloc();
+                    if (av_hwframe_transfer_data(tmpFrame, pAVframe, 0) < 0) {
+                        std::fprintf(stderr, "[hw] transfer data failed\n");
+                        av_frame_free(&tmpFrame);
+                        av_frame_free(&outFrame);
+                        continue;
+                    }
+                    int srcFmt = tmpFrame->format;
+                    if (srcFmt != hwSwsSrcFmt) {
+                        sws_freeContext(hwSwsCtx);
+                        hwSwsCtx = sws_getContext(tmpFrame->width, tmpFrame->height,
+                            static_cast<AVPixelFormat>(srcFmt),
+                            tmpFrame->width, tmpFrame->height,
+                            AV_PIX_FMT_NV12, SWS_FAST_BILINEAR,
+                            nullptr, nullptr, nullptr);
+                        hwSwsSrcFmt = srcFmt;
+                    }
+                    outFrame->width  = pAVframe->width;
+                    outFrame->height = pAVframe->height;
+                    outFrame->format = AV_PIX_FMT_NV12;
+                    if (av_frame_get_buffer(outFrame, 0) < 0 || !hwSwsCtx) {
+                        av_frame_free(&tmpFrame);
+                        av_frame_free(&outFrame);
+                        continue;
+                    }
+                    sws_scale(hwSwsCtx, tmpFrame->data, tmpFrame->linesize, 0,
+                              tmpFrame->height, outFrame->data, outFrame->linesize);
                     av_frame_free(&tmpFrame);
-                    av_frame_free(&outFrame);
-                    continue;
                 }
-                // Create/cache sws_scale to convert GPU→NV12
-                int srcFmt = tmpFrame->format;
-                if (srcFmt != hwSwsSrcFmt) {
-                    sws_freeContext(hwSwsCtx);
-                    hwSwsCtx = sws_getContext(tmpFrame->width, tmpFrame->height,
-                        static_cast<AVPixelFormat>(srcFmt),
-                        tmpFrame->width, tmpFrame->height,
-                        AV_PIX_FMT_NV12, SWS_BICUBIC, nullptr, nullptr, nullptr);
-                    hwSwsSrcFmt = srcFmt;
-                }
-                outFrame->width  = pAVframe->width;
-                outFrame->height = pAVframe->height;
-                outFrame->format = AV_PIX_FMT_NV12;
-                if (av_frame_get_buffer(outFrame, 0) < 0 ||
-                    !hwSwsCtx) {
-                    av_frame_free(&tmpFrame);
-                    av_frame_free(&outFrame);
-                    continue;
-                }
-                sws_scale(hwSwsCtx, tmpFrame->data, tmpFrame->linesize, 0,
-                          tmpFrame->height, outFrame->data, outFrame->linesize);
-                av_frame_free(&tmpFrame);
             } else {
                 // software path: sws_scale to NV12
                 outFrame->width  = width;
@@ -724,10 +875,24 @@ void FFmpegDecoder::videoDecode() {
     }
 
     av_frame_free(&pAVframe);
+
+    // Free software sws_ctx (always present for SW decode)
+    sws_freeContext(pSwsCtx);
+    pSwsCtx = nullptr;
+
+    // Free the GPU filter graph FIRST — it holds internal refs to
+    // hw_frames_ctx / hw_device_ctx via buffersrc parameters.
+    avfilter_graph_free(&hwFilterGraph);
+    hwFilterGraph   = nullptr;
+    hwBufferSrcCtx  = nullptr;
+    hwBufferSinkCtx = nullptr;
+
+    // Free fallback HW sws_ctx (only used if filter graph init failed)
     sws_freeContext(hwSwsCtx);
+    hwSwsCtx = nullptr;
+
     // Codec must be flushed + freed BEFORE hw resources —
     // the codec holds its own references to them (av_buffer_ref).
-    sws_freeContext(pSwsCtx);
     avcodec_flush_buffers(videoDecoder.pAVCtx);
     avcodec_free_context(&videoDecoder.pAVCtx);
 

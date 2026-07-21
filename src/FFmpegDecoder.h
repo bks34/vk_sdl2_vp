@@ -16,6 +16,9 @@ extern "C"
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
 #include <libswresample/swresample.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersrc.h>
+#include <libavfilter/buffersink.h>
 }
 #include <thread>
 #include <string>
@@ -176,6 +179,7 @@ private:
 
 
     bool tryInitHwDecoder();
+    bool initHwNV12Filter(AVBufferRef* hwFramesRef, int codedW, int codedH);
 
     void readPacket();
     void videoDecode();
@@ -187,6 +191,15 @@ private:
     AVBufferRef* hw_device_ctx = nullptr;
     AVBufferRef* hw_frames_ref = nullptr;
     bool useHwDecode = false;
+
+    // GPU filter graph for HW format conversion (replaces sws_scale in HW path)
+    AVFilterGraph*  hwFilterGraph   = nullptr;
+    AVFilterContext* hwBufferSrcCtx = nullptr;
+    AVFilterContext* hwBufferSinkCtx = nullptr;
+    int              hwFilterW       = 0;
+    int              hwFilterH       = 0;
+    std::string      hwBackendName;
+    std::atomic<bool> hwFilterNeedRebuild{false};
 };
 
 
