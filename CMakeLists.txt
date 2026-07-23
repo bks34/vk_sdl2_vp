@@ -40,6 +40,8 @@ add_executable(${PROJECT_NAME}
         src/ThreadSafeQueue.h
         src/SDLAudioPlayer.cpp
         src/SDLAudioPlayer.h
+        src/AppConfig.h
+        src/AppConfig.cpp
 )
 
 
